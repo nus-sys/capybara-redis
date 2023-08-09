@@ -47,6 +47,13 @@
 #include "sockcompat.h"
 #include "win32.h"
 
+#ifdef __DEMIKERNEL__
+#include <demi/libos.h>
+#include <demi/sga.h>
+#include <demi/types.h>
+#include <demi/wait.h>
+#endif
+
 /* Defined in hiredis.c */
 void __redisSetError(redisContext *c, int type, const char *str);
 
@@ -54,13 +61,44 @@ int redisContextUpdateCommandTimeout(redisContext *c, const struct timeval *time
 
 void redisNetClose(redisContext *c) {
     if (c && c->fd != REDIS_INVALID_FD) {
+#ifdef __DEMIKERNEL__
+        demi_close(c->fd);
+#else
         close(c->fd);
+#endif
         c->fd = REDIS_INVALID_FD;
     }
 }
 
 ssize_t redisNetRead(redisContext *c, char *buf, size_t bufcap) {
+#ifdef __DEMIKERNEL__
+    (void) bufcap;
+
+    demi_qresult_t *qr = (demi_qresult_t *)c->privdata;
+    demi_qresult_t new_qr;
+    if (!qr ||
+        qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+        qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
+        qr->qr_opcode != DEMI_OPC_POP) {
+        demi_qtoken_t qt;
+        qr = &new_qr;
+        int retval = demi_pop(&qt, c->fd);
+        if (retval != 0) {
+            return retval;
+        }
+        retval = demi_wait(qr, qt);
+        if (qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+            qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
+            qr->qr_opcode != DEMI_OPC_POP)
+            return 0;
+    }
+    ssize_t nread = qr->qr_value.sga.sga_segs[0].sgaseg_len;
+    memcpy(buf, qr->qr_value.sga.sga_segs[0].sgaseg_buf, nread);
+    demi_sgafree(&qr->qr_value.sga);
+#else
     ssize_t nread = recv(c->fd, buf, bufcap, 0);
+#endif
+
     if (nread == -1) {
         if ((errno == EWOULDBLOCK && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
             /* Try again later */
@@ -82,9 +120,25 @@ ssize_t redisNetRead(redisContext *c, char *buf, size_t bufcap) {
 }
 
 ssize_t redisNetWrite(redisContext *c) {
-    ssize_t nwritten;
+#ifdef __DEMIKERNEL__
+    ssize_t nwritten = hi_sdslen(c->obuf);
+    demi_sgarray_t sga = demi_sgaalloc(nwritten);
+    demi_qtoken_t qt;
+    demi_qresult_t qr;
+    int ret;
 
-    nwritten = send(c->fd, c->obuf, hi_sdslen(c->obuf), 0);
+    memcpy(sga.sga_segs[0].sgaseg_buf, c->obuf, nwritten);
+
+    if (((ret = demi_push(&qt, c->fd, &sga)) != 0 ||
+         (ret = demi_wait(&qr, qt)) != 0) &&
+        ret != EAGAIN) {
+        nwritten = ret;
+    }
+    demi_sgafree(&sga);
+#else
+    ssize_t nwritten = send(c->fd, c->obuf, hi_sdslen(c->obuf), 0);
+#endif
+
     if (nwritten < 0) {
         if ((errno == EWOULDBLOCK && !(c->flags & REDIS_BLOCK)) || (errno == EINTR)) {
             /* Try again */
@@ -120,11 +174,21 @@ static int redisSetReuseAddr(redisContext *c) {
 }
 
 static int redisCreateSocket(redisContext *c, int type) {
+#ifdef __DEMIKERNEL__
     redisFD s;
-    if ((s = socket(type, SOCK_STREAM, 0)) == REDIS_INVALID_FD) {
+    int ret = demi_socket(&s, type, SOCK_STREAM, 0);
+    if (ret != 0) {
         __redisSetErrorFromErrno(c,REDIS_ERR_IO,NULL);
         return REDIS_ERR;
     }
+#else
+    redisFD s = socket(type, SOCK_STREAM, 0);
+    if (s == REDIS_INVALID_FD) {
+        __redisSetErrorFromErrno(c,REDIS_ERR_IO,NULL);
+        return REDIS_ERR;
+    }
+#endif
+
     c->fd = s;
     if (type == AF_INET) {
         if (redisSetReuseAddr(c) == REDIS_ERR) {
@@ -135,6 +199,7 @@ static int redisCreateSocket(redisContext *c, int type) {
 }
 
 static int redisSetBlocking(redisContext *c, int blocking) {
+#ifndef __DEMIKERNEL__ /* Demikernel never uses blocking sockets */
 #ifndef _WIN32
     int flags;
 
@@ -165,6 +230,10 @@ static int redisSetBlocking(redisContext *c, int blocking) {
         return REDIS_ERR;
     }
 #endif /* _WIN32 */
+#else
+    (void) c;
+    (void) blocking;
+#endif /* __DEMIKERNEL__ */
     return REDIS_OK;
 }
 
@@ -219,12 +288,16 @@ int redisKeepAlive(redisContext *c, int interval) {
 }
 
 int redisSetTcpNoDelay(redisContext *c) {
+#ifndef __DEMIKERNEL__ /* Demikernel never uses TCP no delay */
     int yes = 1;
     if (setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &yes, sizeof(yes)) == -1) {
         __redisSetErrorFromErrno(c,REDIS_ERR_IO,"setsockopt(TCP_NODELAY)");
         redisNetClose(c);
         return REDIS_ERR;
     }
+#else
+    (void) c;
+#endif
     return REDIS_OK;
 }
 
@@ -424,6 +497,7 @@ static int _redisContextConnectTcp(redisContext *c, const char *addr, int port,
     int reuseaddr = (c->flags & REDIS_REUSEADDR);
     int reuses = 0;
     long timeout_msec = -1;
+    int retval;
 
     servinfo = NULL;
     c->connection_type = REDIS_CONN_TCP;
@@ -491,7 +565,12 @@ static int _redisContextConnectTcp(redisContext *c, const char *addr, int port,
     }
     for (p = servinfo; p != NULL; p = p->ai_next) {
 addrretry:
-        if ((s = socket(p->ai_family,p->ai_socktype,p->ai_protocol)) == REDIS_INVALID_FD)
+#ifdef __DEMIKERNEL__
+        retval = demi_socket(&s, p->ai_family,p->ai_socktype,p->ai_protocol);
+#else
+        s = socket(p->ai_family,p->ai_socktype,p->ai_protocol);
+#endif
+        if (s == REDIS_INVALID_FD)
             continue;
 
         c->fd = s;
@@ -517,7 +596,12 @@ addrretry:
             }
 
             for (b = bservinfo; b != NULL; b = b->ai_next) {
-                if (bind(s,b->ai_addr,b->ai_addrlen) != -1) {
+#ifdef __DEMIKERNEL__
+                retval = demi_bind(s,b->ai_addr,b->ai_addrlen);
+#else
+                retval = bind(s,b->ai_addr,b->ai_addrlen);
+#endif
+                if (retval != -1) {
                     bound = 1;
                     break;
                 }
@@ -540,7 +624,21 @@ addrretry:
         memcpy(c->saddr, p->ai_addr, p->ai_addrlen);
         c->addrlen = p->ai_addrlen;
 
-        if (connect(s,p->ai_addr,p->ai_addrlen) == -1) {
+#ifdef __DEMIKERNEL__
+        demi_qtoken_t qt;
+        demi_qresult_t qr;
+        retval = demi_connect(&qt,s,p->ai_addr,p->ai_addrlen);
+        if (retval != 0) {
+            redisNetClose(c);
+            continue;
+        } 
+        retval = demi_wait(&qr, qt);
+        /* Demikernel doesn't use errno but just passes the value back */
+        if (retval != 0) errno = retval;
+#else
+        retval = connect(s,p->ai_addr,p->ai_addrlen);
+#endif
+        if (retval == -1) {
             if (errno == EHOSTUNREACH) {
                 redisNetClose(c);
                 continue;

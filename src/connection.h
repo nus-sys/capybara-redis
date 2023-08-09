@@ -50,6 +50,9 @@ typedef enum {
     CONN_STATE_NONE = 0,
     CONN_STATE_CONNECTING,
     CONN_STATE_ACCEPTING,
+#ifdef __DEMIKERNEL__
+    CONN_STATE_LISTENING,
+#endif
     CONN_STATE_CONNECTED,
     CONN_STATE_CLOSED,
     CONN_STATE_ERROR
@@ -61,6 +64,9 @@ typedef enum {
 #define CONN_TYPE_SOCKET            "tcp"
 #define CONN_TYPE_UNIX              "unix"
 #define CONN_TYPE_TLS               "tls"
+#ifdef __DEMIKERNEL__
+#define CONN_TYPE_DEMI        "demi"
+#endif
 #define CONN_TYPE_MAX               8           /* 8 is enough to be extendable */
 
 typedef void (*ConnectionCallbackFunc)(struct connection *conn);
@@ -445,6 +451,12 @@ sds getListensInfoString(sds info);
 int RedisRegisterConnectionTypeSocket(void);
 int RedisRegisterConnectionTypeUnix(void);
 int RedisRegisterConnectionTypeTLS(void);
+
+#ifdef __DEMIKERNEL__
+int RedisRegisterConnectionTypeDemi(void);
+connection *connCreateListeningSocket(int fd);
+connection *connCreateAcceptedDemiQ(int fd, void *priv);
+#endif
 
 /* Return 1 if connection is using TLS protocol, 0 if otherwise. */
 static inline int connIsTLS(connection *conn) {

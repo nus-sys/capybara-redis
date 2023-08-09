@@ -67,6 +67,11 @@ int connTypeInitialize(void) {
     /* may fail if without BUILD_TLS=yes */
     RedisRegisterConnectionTypeTLS();
 
+    #ifdef __DEMIKERNEL__
+    /* Cannot fail if __DEMIKERNEL__ is defined */
+    serverAssert(RedisRegisterConnectionTypeDemi() == C_OK);
+    #endif
+
     return C_OK;
 }
 
@@ -125,6 +130,19 @@ ConnectionType *connectionTypeUnix(void) {
     ct_unix = connectionByType(CONN_TYPE_UNIX);
     return ct_unix;
 }
+
+#ifdef __DEMIKERNEL__
+/* Cache Demikernel connection type, query it by string once */
+ConnectionType *connectionTypeDemi(void) {
+    static ConnectionType *ct_demi = NULL;
+
+    if (ct_demi != NULL)
+        return ct_demi;
+
+    ct_demi = connectionByType(CONN_TYPE_DEMI);
+    return ct_demi;
+}
+#endif
 
 int connectionIndexByType(const char *typename) {
     ConnectionType *ct;

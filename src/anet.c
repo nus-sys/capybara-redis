@@ -50,6 +50,10 @@
 #include "config.h"
 #include "util.h"
 
+#ifdef __DEMIKERNEL__
+#include <demi/libos.h>
+#endif
+
 #define UNUSED(x) (void)(x)
 
 static void anetSetError(char *err, const char *fmt, ...)
@@ -72,6 +76,8 @@ int anetGetError(int fd) {
 }
 
 int anetSetBlock(char *err, int fd, int non_block) {
+/* Demikernel sockets are always nonblocking */
+#ifndef __DEMIKERNEL__
     int flags;
 
     /* Set the socket blocking (if non_block is zero) or non-blocking.
@@ -96,6 +102,7 @@ int anetSetBlock(char *err, int fd, int non_block) {
         anetSetError(err, "fcntl(F_SETFL,O_NONBLOCK): %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
@@ -188,11 +195,14 @@ int anetKeepAlive(char *err, int fd, int interval)
 
 static int anetSetTcpNoDelay(char *err, int fd, int val)
 {
+/* Demikernel doesn't have TCP delay */
+#ifndef __DEMIKERNEL__
     if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val)) == -1)
     {
         anetSetError(err, "setsockopt TCP_NODELAY: %s", strerror(errno));
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
@@ -418,17 +428,35 @@ int anetUnixGenericConnect(char *err, const char *path, int flags)
 }
 
 static int anetListen(char *err, int s, struct sockaddr *sa, socklen_t len, int backlog) {
+#ifdef __DEMIKERNEL__
+    int ret = demi_bind(s,sa,len);
+    if (ret != 0) {
+        anetSetError(err, "bind: %s", strerror(ret));
+        close(s);
+        return ANET_ERR;
+    }
+#else
     if (bind(s,sa,len) == -1) {
         anetSetError(err, "bind: %s", strerror(errno));
         close(s);
         return ANET_ERR;
     }
+#endif
 
+#ifdef __DEMIKERNEL__
+    ret = demi_listen(s, backlog);
+    if (ret != 0) {
+        anetSetError(err, "listen: %s", strerror(ret));
+        close(s);
+        return ANET_ERR;
+    }
+#else
     if (listen(s, backlog) == -1) {
         anetSetError(err, "listen: %s", strerror(errno));
         close(s);
         return ANET_ERR;
     }
+#endif
     return ANET_OK;
 }
 
@@ -441,6 +469,8 @@ static int anetV6Only(char *err, int s) {
     return ANET_OK;
 }
 
+/* Irene: Need to modify this for Demikernel since there's no way to
+   override it and it isn't implemented in connection */
 static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backlog)
 {
     int s = -1, rv;
@@ -457,16 +487,25 @@ static int _anetTcpServer(char *err, int port, char *bindaddr, int af, int backl
     if (af == AF_INET6 && bindaddr && !strcmp("::*", bindaddr))
         bindaddr = NULL;
 
-    if ((rv = getaddrinfo(bindaddr,_port,&hints,&servinfo)) != 0) {
+    rv = getaddrinfo(bindaddr,_port,&hints,&servinfo);
+
+    if (rv != 0) {
         anetSetError(err, "%s", gai_strerror(rv));
         return ANET_ERR;
     }
     for (p = servinfo; p != NULL; p = p->ai_next) {
-        if ((s = socket(p->ai_family,p->ai_socktype,p->ai_protocol)) == -1)
+#ifdef __DEMIKERNEL__
+        demi_socket(&s, p->ai_family,p->ai_socktype,p->ai_protocol);
+#else
+        s = socket(p->ai_family,p->ai_socktype,p->ai_protocol);
+#endif
+        if (s == -1)
             continue;
 
         if (af == AF_INET6 && anetV6Only(err,s) == ANET_ERR) goto error;
+#ifndef __DEMIKERNEL__
         if (anetSetReuseAddr(err,s) == ANET_ERR) goto error;
+#endif
         if (anetListen(err,s,p->ai_addr,p->ai_addrlen,backlog) == ANET_ERR) s = ANET_ERR;
         goto end;
     }
@@ -583,11 +622,19 @@ int anetFdToString(int fd, char *ip, size_t ip_len, int *port, int remote) {
     struct sockaddr_storage sa;
     socklen_t salen = sizeof(sa);
 
+#ifdef __DEMIKERNEL__
+    if (remote) {
+        //if (demi_getpeername(fd, (struct sockaddr *)&sa, &salen) == -1) goto error;
+    } else {
+        //if (demi_getsockname(fd, (struct sockaddr *)&sa, &salen) == -1) goto error;
+    }
+#else
     if (remote) {
         if (getpeername(fd, (struct sockaddr *)&sa, &salen) == -1) goto error;
     } else {
         if (getsockname(fd, (struct sockaddr *)&sa, &salen) == -1) goto error;
     }
+#endif
 
     if (sa.ss_family == AF_INET) {
         struct sockaddr_in *s = (struct sockaddr_in *)&sa;

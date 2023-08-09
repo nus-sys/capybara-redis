@@ -1281,6 +1281,7 @@ void clientAcceptHandler(connection *conn) {
                 "4) Set up an authentication password for the default user. "
                 "NOTE: You only need to do one of the above things in order for "
                 "the server to start accepting connections from the outside.\r\n";
+            fprintf(stderr, "*** SENDING LOCAL WARNING\n");
             if (connWrite(c->conn,err,strlen(err)) == -1) {
                 /* Nothing to do, Just to avoid the warning... */
             }

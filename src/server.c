@@ -69,6 +69,10 @@
 #include <sys/sysctl.h>
 #endif
 
+#ifdef __DEMIKERNEL__
+#include <demi/libos.h>
+#endif
+
 /* Our shared "common" objects */
 
 struct sharedObjectsStruct shared;
@@ -2415,11 +2419,20 @@ int createSocketAcceptHandler(connListener *sfd, aeFileProc *accept_handler) {
     int j;
 
     for (j = 0; j < sfd->count; j++) {
+#ifdef __DEMIKERNEL__
+        connection *conn = connCreateListeningSocket(sfd->fd[j]);
+        if (aeCreateFileEvent(server.el, sfd->fd[j], AE_READABLE, accept_handler,conn) == AE_ERR) {
+            /* Rollback */
+            for (j = j-1; j >= 0; j--) aeDeleteFileEvent(server.el, sfd->fd[j], AE_READABLE);
+            return C_ERR;
+        }
+#else
         if (aeCreateFileEvent(server.el, sfd->fd[j], AE_READABLE, accept_handler,sfd) == AE_ERR) {
             /* Rollback */
             for (j = j-1; j >= 0; j--) aeDeleteFileEvent(server.el, sfd->fd[j], AE_READABLE);
             return C_ERR;
         }
+#endif
     }
     return C_OK;
 }
@@ -2715,11 +2728,13 @@ void initServer(void) {
 
     /* Register a readable event for the pipe used to awake the event loop
      * from module threads. */
+#ifndef __DEMIKERNEL__
     if (aeCreateFileEvent(server.el, server.module_pipe[0], AE_READABLE,
         modulePipeReadable,NULL) == AE_ERR) {
             serverPanic(
                 "Error registering the readable event for the module pipe.");
     }
+#endif
 
     /* Register before and after sleep handlers (note this needs to be done
      * before loading persistence since it is used by processEventsWhileBlocked. */
@@ -2755,14 +2770,23 @@ void initListeners(void) {
     int conn_index;
     connListener *listener;
     if (server.port != 0) {
+#ifdef __DEMIKERNEL__
+        conn_index = connectionIndexByType(CONN_TYPE_DEMI);
+        if (conn_index < 0)
+            serverPanic("Failed finding connection listener of %s", CONN_TYPE_DEMI);
+        listener = &server.listeners[conn_index];
+        listener->ct = connectionByType(CONN_TYPE_DEMI);
+#else
         conn_index = connectionIndexByType(CONN_TYPE_SOCKET);
         if (conn_index < 0)
             serverPanic("Failed finding connection listener of %s", CONN_TYPE_SOCKET);
         listener = &server.listeners[conn_index];
+        listener->ct = connectionByType(CONN_TYPE_SOCKET);
+#endif
+
         listener->bindaddr = server.bindaddr;
         listener->bindaddr_count = server.bindaddr_count;
         listener->port = server.port;
-        listener->ct = connectionByType(CONN_TYPE_SOCKET);
     }
 
     if (server.tls_port || server.tls_replication || server.tls_cluster) {
@@ -2802,6 +2826,7 @@ void initListeners(void) {
     int listen_fds = 0;
     for (int j = 0; j < CONN_TYPE_MAX; j++) {
         listener = &server.listeners[j];
+        
         if (listener->ct == NULL)
             continue;
 
@@ -7294,6 +7319,10 @@ int main(int argc, char **argv) {
     } else {
         serverLog(LL_NOTICE, "Configuration loaded");
     }
+
+#ifdef __DEMIKERNEL__
+    serverAssert(demi_init(0, NULL) == 0);
+#endif
 
     initServer();
     if (background || server.pidfile) createPidFile();

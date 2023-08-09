@@ -72,6 +72,10 @@
 #define CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE 3000000L   /* <= 3 secs(us precision) */
 #define SHOW_THROUGHPUT_INTERVAL 250  /* 250ms */
 
+#ifdef __DEMIKERNEL__
+#include <demi/libos.h>
+#endif
+
 #define CLIENT_GET_EVENTLOOP(c) \
     (c->thread_id >= 0 ? config.threads[c->thread_id]->el : config.el)
 
@@ -406,7 +410,9 @@ static void freeAllClients(void) {
 static void resetClient(client c) {
     aeEventLoop *el = CLIENT_GET_EVENTLOOP(c);
     aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
+#ifndef __DEMIKERNEL__
     aeDeleteFileEvent(el,c->context->fd,AE_READABLE);
+#endif
     aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
     c->written = 0;
     c->pending = config.pipeline;
@@ -488,6 +494,10 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
      * server already sent the reply and we need to parse it. Parsing overhead
      * is not part of the latency, so calculate it only once, here. */
     if (c->latency < 0) c->latency = ustime()-(c->start);
+
+#if __DEMIKERNEL__
+    c->context->privdata = &recent_qr;
+#endif
 
     if (redisBufferRead(c->context) != REDIS_OK) {
         fprintf(stderr,"Error: %s\n",c->context->errstr);
@@ -632,7 +642,9 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
                 }
             } else {
                 aeDeleteFileEvent(el,c->context->fd,AE_WRITABLE);
+#ifndef __DEMIKERNEL__
                 aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
+#endif
                 return;
             }
         }
@@ -837,8 +849,10 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
         benchmarkThread *thread = config.threads[thread_id];
         el = thread->el;
     }
-    if (config.idlemode == 0)
+    if (config.idlemode == 0) {
         aeCreateFileEvent(el,c->context->fd,AE_WRITABLE,writeHandler,c);
+	    aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
+    }
     else
         /* In idle mode, clients still need to register readHandler for catching errors */
         aeCreateFileEvent(el,c->context->fd,AE_READABLE,readHandler,c);
@@ -1788,6 +1802,10 @@ int main(int argc, char **argv) {
     if (config.tls) {
         cliSecureInit();
     }
+#endif
+
+#ifdef __DEMIKERNEL__
+        demi_init(0, NULL);
 #endif
 
     if (config.cluster_mode) {

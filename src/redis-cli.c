@@ -3323,10 +3323,10 @@ static void repl(void) {
     /* There is no need to initialize redis HELP when we are in lua debugger mode.
      * It has its own HELP and commands (COMMAND or COMMAND DOCS will fail and got nothing).
      * We will initialize the redis HELP after the Lua debugging session ended.*/
-    if ((!config.eval_ldb) && isatty(fileno(stdin))) {
+//    if ((!config.eval_ldb) && isatty(fileno(stdin))) {
         /* Initialize the help using the results of the COMMAND command. */
-        cliInitHelp();
-    }
+//        cliInitHelp();
+//    }
 
     config.interactive = 1;
     linenoiseSetMultiLine(1);

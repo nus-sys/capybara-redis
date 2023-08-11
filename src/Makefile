@@ -128,6 +128,11 @@ export DEMIKERNEL_LIBRARY_PATH ?= $(HOME)/lib:$(shell find $(HOME)/lib/ -name '*
 FINAL_CFLAGS+=-I$(DEMIKERNEL_INCLUDE_DIR) -D__DEMIKERNEL__
 FINAL_LDFLAGS+=-Wl,-rpath,$(DEMIKERNEL_LIBRARY_PATH)
 FINAL_LIBS+=$(DEMIKERNEL_LIBOS_SO)
+
+ifeq ($(DEMIKERNEL_TCPMIG),"1")
+FINAL_CFLAGS+=-D__DEMIKERNEL_TCPMIG__
+endif
+
 endif
 
 # Linux ARM32 needs -latomic at linking time

@@ -1,3 +1,15 @@
+# Running
+
+## `redis-server`
+Running `redis-server` using Capybara is completely from Capybara's Makefile.
+
+## `redis-cli`
+- Keep a duplicate repo of Redis, separate from the one compiled with Demikernel.
+- This repo must be compiled without Demikernel.
+- Run `make redis-cli` to compile `redis-cli`.
+- Run `./src/redis-cli -h 10.0.1.9 -p 10000` to start running the CLI.
+
+
 This README is just a fast *quick start* document. You can find more detailed documentation at [redis.io](https://redis.io).
 
 What is Redis?

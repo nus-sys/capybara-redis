@@ -99,12 +99,28 @@ static void demiSocketClose(connection *conn) {
     zfree(conn);
 }
 
+#ifdef __DEMIKERNEL_LOG_IO__
+void eprint_cmd(const void *buf, const size_t len, int tx) {
+    if(tx) fprintf(stderr, ">> ");
+    for(size_t i = 0; i < len; i++) {
+        char c = ((char *) buf)[i];
+        if(c == '\r') continue;
+        if(c == '\n') c = ' ';
+        fputc(c, stderr);
+    }
+    fputc('\n', stderr);
+}
+#endif /* __DEMIKERNEL_LOG_IO__ */
+
 static int demiSocketWrite(connection *conn, const void *data, size_t data_len) {
-    fprintf(stderr, "[LOG] demiSocketWrite() called\n");
     demi_sgarray_t sga = demi_sgaalloc(data_len);
     demi_qtoken_t qt;
     demi_qresult_t qr;
     int ret;
+
+#ifdef __DEMIKERNEL_LOG_IO__
+    eprint_cmd(data, data_len, 1);
+#endif /* __DEMIKERNEL_LOG_IO__ */
 
     memcpy(sga.sga_segs[0].sgaseg_buf, data, data_len);
 
@@ -121,7 +137,6 @@ static int demiSocketWrite(connection *conn, const void *data, size_t data_len) 
 }
 
 static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
-    fprintf(stderr, "[LOG] demiSocketWritev() called\n");
     size_t data_len = 0;
     demi_sgarray_t sga;
     demi_qtoken_t qt;
@@ -139,6 +154,10 @@ static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcn
         offset += iov[i].iov_len;
     }
 
+#ifdef __DEMIKERNEL_LOG_IO__
+    eprint_cmd(sga.sga_segs[0].sgaseg_buf, offset - (char *)sga.sga_segs[0].sgaseg_buf, 1);
+#endif /* __DEMIKERNEL_LOG_IO__ */
+
     if (((ret = demi_push(&qt, conn->fd, &sga)) != 0 ||
          (ret = demi_wait(&qr, qt)) != 0) &&
         errno != EAGAIN) {
@@ -150,7 +169,6 @@ static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcn
 }
 
 static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
-    fprintf(stderr, "[LOG] demiSocketRead() called\n");
     /* We're storing the result from the last wait in a global variable */
     demi_qresult_t *qr = &recent_qr;
     UNUSED(conn);
@@ -180,13 +198,17 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
     } else {
         memcpy(buf, qr->qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
     }
+
+#ifdef __DEMIKERNEL_LOG_IO__
+    eprint_cmd(buf, read_len, 0);
+#endif /* __DEMIKERNEL_LOG_IO__ */
+
     //Irene: Use memory freely for debugging
     //demi_sgafree(&qr->qr_value.sga);
     return read_len;
 }
 
 static int demiSocketAccept(connection *conn, ConnectionCallbackFunc accept_handler) {
-    fprintf(stderr, "[LOG] demiSocketAccept() called\n");
     int ret = C_OK;
 
     if (conn->state != CONN_STATE_ACCEPTING) return C_ERR;
@@ -202,7 +224,6 @@ static int demiSocketAccept(connection *conn, ConnectionCallbackFunc accept_hand
 /* We probably don't need a Demikernel specific function but the conn
    function is not available here */ 
 static int demiSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc func, int barrier) {
-    fprintf(stderr, "[LOG] demiSocketSetWriteHandler() called\n");
     if (func == conn->write_handler) return C_OK;
 
     conn->write_handler = func;
@@ -219,7 +240,6 @@ static int demiSocketSetWriteHandler(connection *conn, ConnectionCallbackFunc fu
 }
 
 static int demiSocketSetReadHandler(connection *conn, ConnectionCallbackFunc func) {
-    fprintf(stderr, "[LOG] demiSocketSetReadHandler() called\n");
     if (func == conn->read_handler) return C_OK;
 
     conn->read_handler = func;
@@ -235,9 +255,7 @@ static const char *demiSocketGetLastError(connection *conn) {
     return strerror(conn->last_errno);
 }
 
-static void demiSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask)
-{
-    fprintf(stderr, "[LOG] demiSocketEventHandler() called\n");
+static void demiSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask) {
     UNUSED(el);
     UNUSED(fd);
     connection *conn = clientData;
@@ -332,7 +350,6 @@ static const char *demiSocketGetType(connection *conn) {
 }
 
 static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    fprintf(stderr, "[LOG] demiSocketAcceptHandler() called\n");
     /* BAD HACK: grab the result from the first fired event */
     demi_qresult_t *qr = &recent_qr; //&el->fired[0].qr;
     int cfd = qr->qr_value.ares.qd;
@@ -350,9 +367,8 @@ static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int
 }
 
 static int demiSocketAddr(connection *conn, char *ip, size_t ip_len, int *port, int remote) {
-    printf("[LOG] demiSocketAddr() called\n");
     // TEMP
-    memcpy(ip, "127.0.0.1:4000", 15);
+    memcpy(ip, "10.0.1.9", 9);
     return C_OK;
 
     if (anetFdToString(conn->fd, ip, ip_len, port, remote) == 0)
@@ -363,7 +379,6 @@ static int demiSocketAddr(connection *conn, char *ip, size_t ip_len, int *port, 
 }
 
 static int demiSocketListen(connListener *listener) {
-    fprintf(stderr, "[LOG] demiSocketListen() called\n");
     return listenToPort(listener);
 }
 

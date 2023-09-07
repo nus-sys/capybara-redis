@@ -367,8 +367,9 @@ static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int
 }
 
 static int demiSocketAddr(connection *conn, char *ip, size_t ip_len, int *port, int remote) {
+    printf("[LOG] demiSocketAddr() called\n");
     // TEMP
-    memcpy(ip, "10.0.1.9", 9);
+    memcpy(ip, "127.0.0.1:4000", 15);
     return C_OK;
 
     if (anetFdToString(conn->fd, ip, ip_len, port, remote) == 0)

@@ -379,8 +379,13 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         struct timeval tv, *tvp = NULL; /* NULL means infinite wait. */
         int64_t usUntilTimer;
 
+        /**
+         * All writes are performed in this beforeSleep() call for Demikernel.
+        */
         if (eventLoop->beforesleep != NULL && (flags & AE_CALL_BEFORE_SLEEP))
             eventLoop->beforesleep(eventLoop);
+
+        // This may be a good place to call migration.
 
         /* The eventLoop->flags may be changed inside beforesleep.
          * So we should check it after beforesleep be called. At the same time,

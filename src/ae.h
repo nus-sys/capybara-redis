@@ -67,7 +67,11 @@ struct aeEventLoop;
 
 /* BIG HACK: We'll just keep the result here for now */
 #ifdef __DEMIKERNEL__
-extern demi_qresult_t recent_qr;
+#define MAX_RECENT_QRS_COUNT 1024
+extern demi_qresult_t recent_qrs[];
+extern int recent_qrs_count;
+
+demi_qresult_t recent_qrs_pop(void);
 #endif
 
 /* Types and data structures */

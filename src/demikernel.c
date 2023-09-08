@@ -30,6 +30,7 @@
 #include "server.h"
 #include "connhelpers.h"
 #include <demi/sga.h>
+#include <demi/libos.h>
 #include <demi/types.h>
 #include <demi/wait.h>
 #include <arpa/inet.h>
@@ -169,34 +170,36 @@ static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcn
 }
 
 static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
-    /* We're storing the result from the last wait in a global variable */
-    demi_qresult_t *qr = &recent_qr;
     UNUSED(conn);
 
-    if (qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
-        qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
-        qr->qr_opcode != DEMI_OPC_POP) {
+    /* We're storing the result from the last wait in a global variable */
+    demi_qresult_t qr = recent_qrs_pop();
+
+    if (qr.qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+        qr.qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
+        qr.qr_opcode != DEMI_OPC_POP) {
         //        conn->state = CONN_STATE_CLOSED;
         return 0;
     }
+
     /* we can't do more sophisticated error handling yet
-    /* else if (ret < 0 && errno != EAGAIN) { */
-    /*     conn->last_errno = errno; */
+        else if (ret < 0 && errno != EAGAIN) {
+            conn->last_errno = errno;
 
-    /*     /\* Don't overwrite the state of a connection that is not already */
-    /*      * connected, not to mess with handler callbacks. */
-    /*      *\/ */
-    /*     if (errno != EINTR && conn->state == CONN_STATE_CONNECTED) */
-    /*         conn->state = CONN_STATE_ERROR; */
-    /* } */
+            Don't overwrite the state of a connection that is not already
+            connected, not to mess with handler callbacks.
+            
+            if (errno != EINTR && conn->state == CONN_STATE_CONNECTED)
+                conn->state = CONN_STATE_ERROR;
+        } */
 
-    /* Irene: Assume only one scatter gather element */
-    size_t read_len = qr->qr_value.sga.sga_segs[0].sgaseg_len;
+    /*  Irene: Assume only one scatter gather element */
+    size_t read_len = qr.qr_value.sga.sga_segs[0].sgaseg_len;
     if (read_len > buf_len) {
         // panic?
         fprintf(stderr, "[LOG] demiSocketRead(): read_len > buf_len\n");
     } else {
-        memcpy(buf, qr->qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
+        memcpy(buf, qr.qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
     }
 
 #ifdef __DEMIKERNEL_LOG_IO__
@@ -350,14 +353,16 @@ static const char *demiSocketGetType(connection *conn) {
 }
 
 static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
-    /* BAD HACK: grab the result from the first fired event */
-    demi_qresult_t *qr = &recent_qr; //&el->fired[0].qr;
-    int cfd = qr->qr_value.ares.qd;
-    struct sockaddr_in *s = &qr->qr_value.ares.addr;
-    char cip[NET_IP_STR_LEN];
+    UNUSED(el);
     UNUSED(fd);
     UNUSED(mask);
     UNUSED(privdata);
+
+    /* BAD HACK: grab the result from globally stored recent results. */
+    demi_qresult_t qr = recent_qrs_pop(); //&el->fired[0].qr;
+    int cfd = qr.qr_value.ares.qd;
+    struct sockaddr_in *s = &qr.qr_value.ares.addr;
+    char cip[NET_IP_STR_LEN];
 
     /* convert IP to string */
     inet_ntop(AF_INET,(void*)&(s->sin_addr),cip,NET_IP_STR_LEN);

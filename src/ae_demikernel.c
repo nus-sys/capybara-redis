@@ -31,7 +31,21 @@
 #include <demi/wait.h>
 #include <demi/libos.h>
 
-demi_qresult_t recent_qr;
+/* BIG HACK: We'll just keep the result here for now */
+demi_qresult_t recent_qrs[MAX_RECENT_QRS_COUNT];
+int recent_qrs_count;
+
+demi_qresult_t recent_qrs_pop(void) {
+    if(recent_qrs_count <= 0) panic("Popped empty recent_qrs");
+
+    demi_qresult_t popped = recent_qrs[0];
+    for(int i = 0; i < recent_qrs_count - 1; i++) recent_qrs[i] = recent_qrs[i + 1];
+    recent_qrs_count -= 1;
+    return popped;
+}
+
+
+//===============================================================
 
 typedef struct aeApiState {
     /* map of fds to mask */
@@ -126,10 +140,10 @@ static int aeApiAddEvent(aeEventLoop *eventLoop, int fd, int mask) {
     }
 
     if ((mask & AE_WRITABLE) && !(state->fd_mask_map[fd] & AE_WRITABLE)) {
-	int i = state->num_writable_fds;
+        int i = state->num_writable_fds;
 
-	state->num_writable_fds += 1;
-	state->writable_fd_list[i] = fd;
+        state->num_writable_fds += 1;
+        state->writable_fd_list[i] = fd;
     }
 
     state->fd_mask_map[fd] = state->fd_mask_map[fd] | mask;
@@ -175,49 +189,58 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
 }
 
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
-    /* Need to stop ignoring tvp once we support wait_any with a time out */
+    (void) tvp;
+
+    static int ready_offsets[MAX_RECENT_QRS_COUNT];
 
     aeApiState *state = eventLoop->apidata;
-    int retval = 0, ready_offset = 100;
-    demi_qresult_t *qr = &recent_qr;
+    int retval = 0;
+    demi_qresult_t *qrs = recent_qrs;
+    recent_qrs_count = MAX_RECENT_QRS_COUNT;
 
     if (state->num_writable_fds > 0) {
         eventLoop->fired[0].fd = state->writable_fd_list[0];
         eventLoop->fired[0].mask = AE_WRITABLE;
+        recent_qrs_count = 0;
+        return 1;
     } else if (state->num_qtokens > 0) {
-        retval = demi_wait_any(qr, &ready_offset, state->qtokens, state->num_qtokens);
+        retval = demi_try_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
 
-        /* demi_wait_any only returns one event at a time */
         if (retval == 0) {
-            int mask = state->fd_mask_map[qr->qr_qd];
-            demi_qtoken_t qt = 100; // for debugging
-            if (qr->qr_opcode == DEMI_OPC_POP) {
-                /* if no buffer is returned, then there was an error */            
-                if (qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
-                    qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
-                    qr->qr_opcode == 5) {
-                    state->qtokens[ready_offset] = 0;
-                } else {
-                    retval = demi_pop(&qt, qr->qr_qd);
+            for(int j = 0; j < recent_qrs_count; j++) {
+                demi_qresult_t *qr = &qrs[j];
+                int ready_offset = ready_offsets[j];
+
+                int mask = state->fd_mask_map[qr->qr_qd];
+                demi_qtoken_t qt = 100; // for debugging
+                if (qr->qr_opcode == DEMI_OPC_POP) {
+                    /* if no buffer is returned, then there was an error */            
+                    if (qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+                        qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
+                        qr->qr_opcode == 5) {
+                        state->qtokens[ready_offset] = 0;
+                    } else {
+                        retval = demi_pop(&qt, qr->qr_qd);
+                        state->qtokens[ready_offset] = qt;
+                    }
+                } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
+                    retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
                 }
-            } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
-                retval = demi_accept(&qt, qr->qr_qd);
-                state->qtokens[ready_offset] = qt;
+                if (retval != 0) {
+                    /* Not sure if this is the right way to indicate an error */            
+                    panic("aeApiPoll: pop/accept, %s", strerror(retval));
+                }
+                eventLoop->fired[j].fd = qr->qr_qd;
+                eventLoop->fired[j].mask = mask;
             }
-            if (retval != 0) {
-                /* Not sure if this is the right way to indicate an error */            
-                panic("aeApiPoll: waitany, %s", strerror(retval));
-            }
-            eventLoop->fired[0].fd = qr->qr_qd;
-            eventLoop->fired[0].mask = mask;
         } else {
-            panic("aeApiPoll: waitany, %s", strerror(retval));
+            panic("aeApiPoll: trywaitany, %s", strerror(retval));
         }
     } else {
 	    panic("aeApiPoll: no events!");
     }
-    return 1;
+    return recent_qrs_count;
 }
 
 static char *aeApiName(void) {

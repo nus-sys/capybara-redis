@@ -2046,6 +2046,10 @@ int handleClientsWithPendingWrites(void) {
          * output to the client, we need to install the writable handler. */
         if (clientHasPendingReplies(c)) {
             installClientWriteHandler(c);
+        } else {
+#ifdef __DEMIKERNEL_TCPMIG__
+            mark_for_migration(c->conn->fd);
+#endif
         }
     }
     return processed;

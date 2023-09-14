@@ -453,6 +453,7 @@ int RedisRegisterConnectionTypeUnix(void);
 int RedisRegisterConnectionTypeTLS(void);
 
 #ifdef __DEMIKERNEL__
+ConnectionType *connectionTypeDemi(void);
 int RedisRegisterConnectionTypeDemi(void);
 connection *connCreateListeningSocket(int fd);
 connection *connCreateAcceptedDemiQ(int fd, void *priv);

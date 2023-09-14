@@ -65,7 +65,7 @@ connection *connCreateListeningSocket(int fd) {
 
 static int demiSocketConnect(connection *conn, const char *addr, int port, const char *src_addr,
                              ConnectionCallbackFunc connect_handler) {
-    int fd = anetTcpNonBlockBestEffortBindConnect(NULL,addr,port,src_addr);
+    /* int fd = anetTcpNonBlockBestEffortBindConnect(NULL,addr,port,src_addr);
     if (fd == -1) {
         conn->state = CONN_STATE_ERROR;
         conn->last_errno = errno;
@@ -77,8 +77,30 @@ static int demiSocketConnect(connection *conn, const char *addr, int port, const
 
     conn->conn_handler = connect_handler;
     aeCreateFileEvent(server.el, conn->fd, AE_WRITABLE,
-                      conn->type->ae_handler, conn);
+                      conn->type->ae_handler, conn); */
 
+    // TEMP
+    struct sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = inet_addr(addr);
+
+    int fd, retval;
+    demi_qtoken_t qt;
+    demi_qresult_t qr = {};
+    fprintf(stderr, "demi_socket() = %d\n", retval = demi_socket(&fd, AF_INET, SOCK_STREAM, 0));
+    if(retval) while(1);
+    fprintf(stderr, "demi_connect() = %d\n", retval = demi_connect(&qt, fd, (struct sockaddr *) &address, sizeof(address)));
+    if(retval) while(1);
+    fprintf(stderr, "demi_wait() = %d\n", retval = demi_wait(&qr, qt));
+    if(retval) while(1);
+    fprintf(stderr, "[*] Connected to master at %s:%d\n", addr, port);
+
+    conn->fd = fd;
+    conn->state = CONN_STATE_CONNECTING;
+    conn->conn_handler = connect_handler;
+    aeCreateFileEvent(server.el, conn->fd, AE_WRITABLE,
+                      conn->type->ae_handler, conn);
     return C_OK;
 }
 
@@ -109,6 +131,10 @@ void eprint_cmd(const void *buf, const size_t len, int tx) {
         if(c == '\n') c = ' ';
         fputc(c, stderr);
     }
+}
+
+void eprintln_cmd(const void *buf, const size_t len, int tx) {
+    eprint_cmd(buf, len, tx);
     fputc('\n', stderr);
 }
 #endif /* __DEMIKERNEL_LOG_IO__ */
@@ -120,7 +146,7 @@ static int demiSocketWrite(connection *conn, const void *data, size_t data_len) 
     int ret;
 
 #ifdef __DEMIKERNEL_LOG_IO__
-    eprint_cmd(data, data_len, 1);
+    eprintln_cmd(data, data_len, 1);
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
     memcpy(sga.sga_segs[0].sgaseg_buf, data, data_len);
@@ -156,7 +182,7 @@ static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcn
     }
 
 #ifdef __DEMIKERNEL_LOG_IO__
-    eprint_cmd(sga.sga_segs[0].sgaseg_buf, offset - (char *)sga.sga_segs[0].sgaseg_buf, 1);
+    eprintln_cmd(sga.sga_segs[0].sgaseg_buf, offset - (char *)sga.sga_segs[0].sgaseg_buf, 1);
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
     if (((ret = demi_push(&qt, conn->fd, &sga)) != 0 ||
@@ -203,7 +229,7 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
     }
 
 #ifdef __DEMIKERNEL_LOG_IO__
-    eprint_cmd(buf, read_len, 0);
+    eprintln_cmd(buf, read_len, 0);
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
     //Irene: Use memory freely for debugging
@@ -321,29 +347,70 @@ static int demiSocketBlockingConnect(connection *conn, const char *addr, int por
 
 static ssize_t demiSocketSyncWrite(connection *conn, char *ptr, ssize_t size, long long timeout) {
     //    panic("[LOG] demiConn: demiSocketSyncWrite not supported!");
-    UNUSED(conn);
-    UNUSED(ptr);
-    UNUSED(size);
     UNUSED(timeout);
-    return 0; //syncWrite(conn->fd, ptr, size, timeout);
+
+    return demiSocketWrite(conn, ptr, size);
 }
 
 static ssize_t demiSocketSyncRead(connection *conn, char *ptr, ssize_t size, long long timeout) {
-    //panic("[LOG] demiConn: demiSocketSyncRead not supported!");
-    UNUSED(conn);
-    UNUSED(ptr);
-    UNUSED(size);
+    fprintf(stderr, "demiSocketSyncRead()\n");
     UNUSED(timeout);
-    return 0;// syncRead(conn->fd, ptr, size, timeout);
+
+    demi_qtoken_t qt;
+    demi_qresult_t qr;
+    int ret;
+
+    if (((ret = demi_pop(&qt, conn->fd)) != 0 ||
+         (ret = demi_wait(&qr, qt)) != 0 ||
+         qr.qr_opcode != DEMI_OPC_POP) &&
+        ret != EAGAIN) {
+        conn->last_errno = ret;
+        return -1;
+    }
+
+    if (qr.qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+        qr.qr_value.sga.sga_segs[0].sgaseg_buf == NULL) {
+        //        conn->state = CONN_STATE_CLOSED;
+        return 0;
+    }
+
+    ssize_t read_len = qr.qr_value.sga.sga_segs[0].sgaseg_len;
+    if (read_len > size) {
+        // panic?
+        fprintf(stderr, "[LOG] demiSocketRead(): read_len > buf_len\n");
+    } else {
+        memcpy(ptr, qr.qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
+    }
+
+#ifdef __DEMIKERNEL_LOG_IO__
+    eprintln_cmd(ptr, read_len, 0);
+#endif /* __DEMIKERNEL_LOG_IO__ */
+
+    //demi_sgafree(&qr.qr_value.sga);
+    return read_len;
 }
 
 static ssize_t demiSocketSyncReadLine(connection *conn, char *ptr, ssize_t size, long long timeout) {
-    //panic("[LOG] demiConn: demiSocketReadLine not supported!");
-    UNUSED(conn);
-    UNUSED(ptr);
-    UNUSED(size);
-    UNUSED(timeout);
-    return 0; //syncReadLine(conn->fd, ptr, size, timeout);
+    fprintf(stderr, "demiSocketSyncReadLine()\n");
+    ssize_t nread = 0;
+
+    size--;
+    while(size) {
+        char c;
+
+        if (demiSocketSyncRead(conn, &c, 1, timeout) == -1) return -1;
+        if (c == '\n') {
+            *ptr = '\0';
+            if (nread && *(ptr - 1) == '\r') *(ptr - 1) = '\0';
+            return nread;
+        } else {
+            *ptr++ = c;
+            *ptr = '\0';
+            nread++;
+        }
+        size--;
+    }
+    return nread;
 }
 
 static const char *demiSocketGetType(connection *conn) {
@@ -402,24 +469,6 @@ static void demiSocketShutdown(connection *conn) {
 
     shutdown(conn->fd, SHUT_RDWR);
 }
-
-/* static ConnectionType CT_DemiSocket = {
-    .ae_handler = demiSocketEventHandler,
-    .close = demiSocketClose,
-    .write = demiSocketWrite,
-    .writev = demiSocketWritev,
-    .read = demiSocketRead,
-    .accept = demiSocketAccept,
-    .connect = demiSocketConnect,
-    .set_write_handler = demiSocketSetWriteHandler,
-    .set_read_handler = demiSocketSetReadHandler,
-    .get_last_error = demiSocketGetLastError,
-    .blocking_connect = demiSocketBlockingConnect,
-    .sync_write = demiSocketSyncWrite,
-    .sync_read = demiSocketSyncRead,
-    .sync_readline = demiSocketSyncReadLine,
-    .get_type = connSocketGetType
-}; */
 
 static ConnectionType CT_DemiSocket = {
     /* connection type */

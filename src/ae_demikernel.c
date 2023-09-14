@@ -44,6 +44,21 @@ demi_qresult_t recent_qrs_pop(void) {
     return popped;
 }
 
+/* BIG HACK: All FDs with completed replies are stored here. */
+#ifdef __DEMIKERNEL_TCPMIG__
+#define MIGRATION_AVAILABLE_FDS_MAX_COUNT 256
+
+int migration_available_fds[MIGRATION_AVAILABLE_FDS_MAX_COUNT];
+int migration_available_fds_count;
+
+void mark_for_migration(int fd) {
+    if(migration_available_fds_count == MIGRATION_AVAILABLE_FDS_MAX_COUNT) {
+        fprintf(stderr, "[WARN] migration_available_fds overflow\n");
+        return;
+    }
+    migration_available_fds[migration_available_fds_count++] = fd;
+}
+#endif
 
 //===============================================================
 
@@ -246,3 +261,30 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 static char *aeApiName(void) {
     return "demi_wait_any";
 }
+
+#ifdef __DEMIKERNEL_TCPMIG__
+void perform_migration_tasks(aeEventLoop *eventLoop) {
+    for(int i = 0; i < migration_available_fds_count; i++) {
+        int fd = migration_available_fds[i];
+
+        aeFileEvent *fe = &eventLoop->events[fd];
+        if(fe->mask == AE_NONE) {
+            continue;
+        }
+
+        int was_migration_done = 0, retval;
+        if((retval = demi_notify_migration_safety(&was_migration_done, fd)) != 0) {
+            fprintf(stderr, "demi_notify_migration_safety() failed: %s\n", strerror(retval));
+            continue;
+        }
+        if(was_migration_done) {
+            aeDeleteFileEvent(eventLoop, fd, fe->mask);
+
+            // Break after one migration for now
+            fprintf(stderr, "FD %d migrated\n", fd);
+            break;
+        }
+    }
+    migration_available_fds_count = 0;
+}
+#endif

@@ -67,12 +67,16 @@ static void anetSetError(char *err, const char *fmt, ...)
 }
 
 int anetGetError(int fd) {
+#ifdef __DEMIKERNEL__
+    return 0;
+#else
     int sockerr = 0;
     socklen_t errlen = sizeof(sockerr);
 
     if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &sockerr, &errlen) == -1)
         sockerr = errno;
     return sockerr;
+#endif
 }
 
 int anetSetBlock(char *err, int fd, int non_block) {

@@ -219,7 +219,10 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
         recent_qrs_count = 0;
         return 1;
     } else if (state->num_qtokens > 0) {
-        retval = demi_try_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
+        do {
+            recent_qrs_count = MAX_RECENT_QRS_COUNT;
+            retval = demi_try_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
+        } while (recent_qrs_count == 0);
 
         if (retval == 0) {
             for(int j = 0; j < recent_qrs_count; j++) {

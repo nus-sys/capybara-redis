@@ -71,7 +71,7 @@ struct aeEventLoop;
 extern demi_qresult_t recent_qrs[];
 extern int recent_qrs_count;
 
-demi_qresult_t recent_qrs_pop(void);
+demi_qresult_t *recent_qrs_pop(void);
 
 #ifdef __DEMIKERNEL_TCPMIG__
 void mark_for_migration(int fd);

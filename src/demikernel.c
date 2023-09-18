@@ -199,11 +199,11 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
     UNUSED(conn);
 
     /* We're storing the result from the last wait in a global variable */
-    demi_qresult_t qr = recent_qrs_pop();
+    demi_qresult_t *qr = recent_qrs_pop();
 
-    if (qr.qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
-        qr.qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
-        qr.qr_opcode != DEMI_OPC_POP) {
+    if (qr->qr_value.sga.sga_segs[0].sgaseg_len == 0 ||
+        qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
+        qr->qr_opcode != DEMI_OPC_POP) {
         //        conn->state = CONN_STATE_CLOSED;
         return 0;
     }
@@ -220,12 +220,12 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
         } */
 
     /*  Irene: Assume only one scatter gather element */
-    size_t read_len = qr.qr_value.sga.sga_segs[0].sgaseg_len;
+    size_t read_len = qr->qr_value.sga.sga_segs[0].sgaseg_len;
     if (read_len > buf_len) {
         // panic?
         fprintf(stderr, "[LOG] demiSocketRead(): read_len > buf_len\n");
     } else {
-        memcpy(buf, qr.qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
+        memcpy(buf, qr->qr_value.sga.sga_segs[0].sgaseg_buf, read_len);
     }
 
 #ifdef __DEMIKERNEL_LOG_IO__
@@ -233,7 +233,7 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
     //Irene: Use memory freely for debugging
-    //demi_sgafree(&qr->qr_value.sga);
+    demi_sgafree(&qr->qr_value.sga);
     return read_len;
 }
 
@@ -426,9 +426,9 @@ static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int
     UNUSED(privdata);
 
     /* BAD HACK: grab the result from globally stored recent results. */
-    demi_qresult_t qr = recent_qrs_pop(); //&el->fired[0].qr;
-    int cfd = qr.qr_value.ares.qd;
-    struct sockaddr_in *s = &qr.qr_value.ares.addr;
+    demi_qresult_t *qr = recent_qrs_pop(); //&el->fired[0].qr;
+    int cfd = qr->qr_value.ares.qd;
+    struct sockaddr_in *s = &qr->qr_value.ares.addr;
     char cip[NET_IP_STR_LEN];
 
     /* convert IP to string */

@@ -34,13 +34,12 @@
 /* BIG HACK: We'll just keep the result here for now */
 demi_qresult_t recent_qrs[MAX_RECENT_QRS_COUNT];
 int recent_qrs_count;
+int recent_qrs_index;
 
-demi_qresult_t recent_qrs_pop(void) {
-    if(recent_qrs_count <= 0) panic("Popped empty recent_qrs");
+demi_qresult_t *recent_qrs_pop(void) {
+    if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
 
-    demi_qresult_t popped = recent_qrs[0];
-    for(int i = 0; i < recent_qrs_count - 1; i++) recent_qrs[i] = recent_qrs[i + 1];
-    recent_qrs_count -= 1;
+    demi_qresult_t *popped = recent_qrs + recent_qrs_index++;
     return popped;
 }
 
@@ -226,6 +225,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 
         retval = demi_wait_any(qrs, ready_offsets, state->qtokens, state->num_qtokens);
         recent_qrs_count = 1;
+        recent_qrs_index = 0;
 
         if (retval == 0) {
             for(int j = 0; j < recent_qrs_count; j++) {

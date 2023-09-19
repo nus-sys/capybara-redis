@@ -439,7 +439,7 @@ static void demiSocketAcceptHandler(aeEventLoop *el, int fd, void *privdata, int
 }
 
 static int demiSocketAddr(connection *conn, char *ip, size_t ip_len, int *port, int remote) {
-    printf("[LOG] demiSocketAddr() called\n");
+    // printf("[LOG] demiSocketAddr() called\n");
     // TEMP
     memcpy(ip, "127.0.0.1:4000", 15);
     return C_OK;

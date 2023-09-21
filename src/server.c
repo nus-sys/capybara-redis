@@ -6531,6 +6531,8 @@ static void sigShutdownHandler(int sig) {
         msg = "Received shutdown signal during loading, scheduling shutdown.";
     }
 
+    demi_print_queue_length_log();
+
     serverLogFromHandler(LL_WARNING, msg);
     server.shutdown_asap = 1;
     server.last_sig_received = sig;

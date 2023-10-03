@@ -7350,10 +7350,17 @@ int main(int argc, char **argv) {
     if (!server.sentinel_mode) {
         /* Things not needed when running in Sentinel mode. */
         serverLog(LL_NOTICE,"Server initialized");
+
+        int aof_state = server.aof_state;
+        server.aof_state = AOF_ON;
+
         aofLoadManifestFromDisk();
         loadDataFromDisk();
         aofOpenIfNeededOnServerStart();
         aofDelHistoryFiles();
+
+        server.aof_state = aof_state;
+
         if (server.cluster_enabled) {
             serverAssert(verifyClusterConfigWithData() == C_OK);
         }

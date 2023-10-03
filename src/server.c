@@ -6530,8 +6530,10 @@ static void sigShutdownHandler(int sig) {
     } else if (server.loading) {
         msg = "Received shutdown signal during loading, scheduling shutdown.";
     }
-
+#ifdef __DEMIKERNEL_TCPMIG__
     demi_print_queue_length_log();
+#endif
+
 
     serverLogFromHandler(LL_WARNING, msg);
     server.shutdown_asap = 1;

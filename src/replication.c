@@ -60,8 +60,10 @@ static ConnectionType *connTypeOfReplication(void) {
         return connectionTypeTls();
     }
 
-    //return connectionTypeTcp();
+#ifdef __DEMIKERNEL__
     return connectionTypeDemi();
+#endif
+    return connectionTypeTcp();
 }
 
 /* Return the pointer to a string representing the slave ip:listening_port

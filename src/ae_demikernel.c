@@ -236,7 +236,9 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         state->qtokens[ready_offset] = 0;
                     } else {
                         retval = demi_pop(&qt, qr->qr_qd);
-                        state->qtokens[ready_offset] = qt;
+                        if (retval != ETCPMIG) {
+                            state->qtokens[ready_offset] = qt;
+                        }
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);

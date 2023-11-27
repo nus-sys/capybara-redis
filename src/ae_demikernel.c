@@ -39,25 +39,11 @@ int recent_qrs_index;
 demi_qresult_t *recent_qrs_pop(void) {
     if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
 
-    demi_qresult_t *popped = recent_qrs + recent_qrs_index++;
+    demi_qresult_t *popped = recent_qrs + recent_qrs_index;
+    recent_qrs_index += 1;
     return popped;
 }
 
-/* BIG HACK: All FDs with completed replies are stored here. */
-#ifdef __DEMIKERNEL_TCPMIG__
-#define MIGRATION_AVAILABLE_FDS_MAX_COUNT 256
-
-int migration_available_fds[MIGRATION_AVAILABLE_FDS_MAX_COUNT];
-int migration_available_fds_count;
-
-void mark_for_migration(int fd) {
-    if(migration_available_fds_count == MIGRATION_AVAILABLE_FDS_MAX_COUNT) {
-        fprintf(stderr, "[WARN] migration_available_fds overflow\n");
-        return;
-    }
-    migration_available_fds[migration_available_fds_count++] = fd;
-}
-#endif
 
 //===============================================================
 
@@ -215,15 +201,16 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     if (state->num_writable_fds > 0) {
         eventLoop->fired[0].fd = state->writable_fd_list[0];
         eventLoop->fired[0].mask = AE_WRITABLE;
+        recent_qrs_index = 0;
         recent_qrs_count = 0;
         return 1;
     } else if (state->num_qtokens > 0) {
-        retval = demi_try_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
+        retval = demi_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
         recent_qrs_index = 0;
 
         if (retval == 0) {
             for(int j = 0; j < recent_qrs_count; j++) {
-                demi_qresult_t *qr = &qrs[j];
+                const demi_qresult_t *qr = &qrs[j];
                 int ready_offset = ready_offsets[j];
 
                 int mask = state->fd_mask_map[qr->qr_qd];
@@ -236,13 +223,16 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         state->qtokens[ready_offset] = 0;
                     } else {
                         retval = demi_pop(&qt, qr->qr_qd);
-                        if (retval != ETCPMIG) {
-                            state->qtokens[ready_offset] = qt;
-                        }
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
+                } else if (qr->qr_opcode == DEMI_OPC_FAILED) {
+                    if (qr->qr_value.err == ETCPMIG) {
+                        fprintf(stderr, "polled migrated qtoken");
+                    } else {
+                        panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
+                    }
                 }
                 if (retval != 0) {
                     /* Not sure if this is the right way to indicate an error */            
@@ -263,30 +253,3 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 static char *aeApiName(void) {
     return "demi_wait_any";
 }
-
-#ifdef __DEMIKERNEL_TCPMIG__
-void perform_migration_tasks(aeEventLoop *eventLoop) {
-    for(int i = 0; i < migration_available_fds_count; i++) {
-        int fd = migration_available_fds[i];
-
-        aeFileEvent *fe = &eventLoop->events[fd];
-        if(fe->mask == AE_NONE) {
-            continue;
-        }
-
-        int was_migration_done = 0, retval;
-        if((retval = demi_notify_migration_safety(&was_migration_done, fd)) != 0) {
-            fprintf(stderr, "demi_notify_migration_safety() failed: %s\n", strerror(retval));
-            continue;
-        }
-        if(was_migration_done) {
-            aeDeleteFileEvent(eventLoop, fd, fe->mask);
-
-            // Break after one migration for now
-            fprintf(stderr, "FD %d migrated\n", fd);
-            break;
-        }
-    }
-    migration_available_fds_count = 0;
-}
-#endif

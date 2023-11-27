@@ -385,11 +385,6 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
         if (eventLoop->beforesleep != NULL && (flags & AE_CALL_BEFORE_SLEEP))
             eventLoop->beforesleep(eventLoop);
 
-        // This may be a good place to call migration.
-#ifdef __DEMIKERNEL_TCPMIG__
-        perform_migration_tasks(eventLoop);
-#endif
-
         /* The eventLoop->flags may be changed inside beforesleep.
          * So we should check it after beforesleep be called. At the same time,
          * the parameter flags always should have the highest priority.

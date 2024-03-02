@@ -228,11 +228,15 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
                 } else if (qr->qr_opcode == DEMI_OPC_FAILED) {
+                    #ifdef __DEMIKERNEL_TCPMIG__
                     if (qr->qr_value.err == ETCPMIG) {
                         fprintf(stderr, "polled migrated qtoken");
                     } else {
                         panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
                     }
+                    #else
+                    panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
+                    #endif
                 }
                 if (retval != 0) {
                     /* Not sure if this is the right way to indicate an error */            

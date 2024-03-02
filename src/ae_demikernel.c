@@ -205,7 +205,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
         recent_qrs_count = 0;
         return 1;
     } else if (state->num_qtokens > 0) {
-        retval = demi_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens);
+        retval = demi_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens, 500);
         recent_qrs_index = 0;
 
         if (retval == 0) {

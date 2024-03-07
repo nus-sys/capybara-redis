@@ -193,6 +193,10 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 
     static int ready_offsets[MAX_RECENT_QRS_COUNT];
 
+    #ifdef __DEMIKERNEL_TCPMIG__
+    static int mig_per_n[4096] = {};
+    #endif
+
     aeApiState *state = eventLoop->apidata;
     int retval = 0;
     demi_qresult_t *qrs = recent_qrs;
@@ -222,16 +226,25 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         qr->qr_opcode == 5) {
                         state->qtokens[ready_offset] = 0;
                     } else {
+                        #ifdef __DEMIKERNEL_TCPMIG__
+                        if(mig_per_n[qr->qr_qd] == 1) {
+                            demi_initiate_migration(qr->qr_qd);
+                            mig_per_n[qr->qr_qd] = 0;
+                        }
+                        #endif
+
                         retval = demi_pop(&qt, qr->qr_qd);
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
+
+                    #ifdef __DEMIKERNEL_TCPMIG__
+                    mig_per_n[qr->qr_value.ares.qd] = 1;
+                    #endif
                 } else if (qr->qr_opcode == DEMI_OPC_FAILED) {
                     #ifdef __DEMIKERNEL_TCPMIG__
-                    if (qr->qr_value.err == ETCPMIG) {
-                        fprintf(stderr, "polled migrated qtoken");
-                    } else {
+                    if (qr->qr_value.err != ETCPMIG) {
                         panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
                     }
                     #else

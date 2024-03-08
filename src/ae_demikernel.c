@@ -232,8 +232,8 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                             mig_per_n[qr->qr_qd] = 0;
                         }
                         #endif
-
                         retval = demi_pop(&qt, qr->qr_qd);
+                        mask |= (1 << 10);
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);
@@ -244,7 +244,11 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     #endif
                 } else if (qr->qr_opcode == DEMI_OPC_FAILED) {
                     #ifdef __DEMIKERNEL_TCPMIG__
-                    if (qr->qr_value.err != ETCPMIG) {
+                    if (qr->qr_value.err == ETCPMIG) {
+                        // We don't track this operation anymore.
+                        mask |= (1 << 10);
+                    }
+                    else {
                         panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
                     }
                     #else
@@ -259,11 +263,12 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                 eventLoop->fired[j].mask = mask;
             }
         } else {
-            panic("aeApiPoll: trywaitany, %s", strerror(retval));
+            panic("aeApiPoll: demi_wait_any, %s", strerror(retval));
         }
     } else {
 	    panic("aeApiPoll: no events!");
     }
+
     return recent_qrs_count;
 }
 

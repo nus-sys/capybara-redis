@@ -236,11 +236,13 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         #else
                         retval = demi_pop(&qt, qr->qr_qd);
                         state->qtokens[ready_offset] = qt;
+                        // fprintf(stderr, "REDIS pop %d\n", qr->qr_qd);
                         #endif
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
+                    // fprintf(stderr, "REDIS accept %d\n", qr->qr_value.ares.qd);
 
                     #ifdef __MANUAL_TCPMIG__
                     mig_per_n[qr->qr_value.ares.qd] = 1;
@@ -250,6 +252,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     if (qr->qr_value.err == ETCPMIG) {
                         // We don't track this operation anymore.
                         mask |= (1 << 10);
+                        // fprintf(stderr, "REDIS ETCPMIG %d\n", qr->qr_qd);
                     }
                     else {
                         panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));

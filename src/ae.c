@@ -420,13 +420,15 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             int mask = eventLoop->fired[j].mask;
             int fired = 0; /* Number of events fired for current fd. */
 
+            #ifdef __DEMIKERNEL_TCPMIG__
             // If this flag is set, connection was migrated. Remove this connection.
             if(mask & (1 << 10)) {
                 mask &= ~(1 << 10);
                 aeDeleteFileEvent(eventLoop, fd, mask);
-                fprintf(stderr, "REDIS delete qd %d\n", fd);
+                // fprintf(stderr, "REDIS delete qd %d\n", fd);
                 continue;
             }
+            #endif
 
             /* Normally we execute the readable event first, and the writable
              * event later. This is useful as sometimes we may be able

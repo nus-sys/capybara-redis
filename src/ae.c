@@ -420,6 +420,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             int mask = eventLoop->fired[j].mask;
             int fired = 0; /* Number of events fired for current fd. */
 
+            // If this flag is set, connection was migrated. Remove this connection.
             if(mask & (1 << 10)) {
                 mask &= ~(1 << 10);
                 aeDeleteFileEvent(eventLoop, fd, mask);

@@ -127,6 +127,8 @@ ssize_t redisNetWrite(redisContext *c) {
     demi_qresult_t qr;
     int ret;
 
+    fprintf(stderr, "HIREDIS\n");
+
     memcpy(sga.sga_segs[0].sgaseg_buf, c->obuf, nwritten);
 
     if (((ret = demi_push(&qt, c->fd, &sga)) != 0 ||

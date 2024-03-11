@@ -32,9 +32,9 @@
 #include <demi/libos.h>
 
 /* BIG HACK: We'll just keep the result here for now */
-demi_qresult_t recent_qrs[MAX_RECENT_QRS_COUNT];
-int recent_qrs_count;
-int recent_qrs_index;
+demi_qresult_t recent_qrs[MAX_QTOKEN_COUNT];
+size_t recent_qrs_count;
+size_t recent_qrs_index;
 
 demi_qresult_t *recent_qrs_pop(void) {
     if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
@@ -42,6 +42,19 @@ demi_qresult_t *recent_qrs_pop(void) {
     demi_qresult_t *popped = recent_qrs + recent_qrs_index;
     recent_qrs_index += 1;
     return popped;
+}
+
+demi_qtoken_t push_qtokens[MAX_QTOKEN_COUNT];
+demi_qresult_t push_qresults[MAX_QTOKEN_COUNT];
+size_t push_qtoken_count = 0;
+
+void push_qtoken(demi_qtoken_t qt) {
+    if(push_qtoken_count == MAX_QTOKEN_COUNT) panic("Too many push qtokens");
+    push_qtokens[push_qtoken_count++] = qt;
+}
+
+inline void reset_push_qtokens(void) {
+    push_qtoken_count = 0;
 }
 
 
@@ -191,7 +204,7 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     (void) tvp;
 
-    static int ready_offsets[MAX_RECENT_QRS_COUNT];
+    static size_t ready_offsets[MAX_QTOKEN_COUNT];
 
     #ifdef __MANUAL_TCPMIG__
     static int mig_per_n[4096] = {};
@@ -200,7 +213,33 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     aeApiState *state = eventLoop->apidata;
     int retval = 0;
     demi_qresult_t *qrs = recent_qrs;
-    recent_qrs_count = MAX_RECENT_QRS_COUNT;
+    recent_qrs_count = MAX_QTOKEN_COUNT;
+
+    // Wait for push tokens.
+    retval = demi_wait_any(push_qresults, ready_offsets, &recent_qrs_count, push_qtokens, push_qtoken_count, 0);
+    if(retval != 0 || recent_qrs_count != push_qtoken_count) {
+        panic("Push tokens wait error");
+    }
+    size_t fired_index = 0;
+    for(size_t j = 0; j < recent_qrs_count; j++) {
+        const demi_qresult_t *qr = &push_qresults[j];
+        if(qr->qr_opcode == DEMI_OPC_FAILED) {
+            #ifdef __DEMIKERNEL_TCPMIG__
+            if(qr->qr_value.err == ETCPMIG) {
+                eventLoop->fired[fired_index].fd = qr->qr_qd;
+                eventLoop->fired[fired_index].mask = state->fd_mask_map[qr->qr_qd] | (1 << 10);
+                fired_index += 1;
+                // fprintf(stderr, "REDIS ETCPMIG (push) %d\n", qr->qr_qd);
+            } else {
+                panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+            }
+            #else
+            panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+            #endif
+        }
+    }
+    reset_push_qtokens();
+    recent_qrs_count = MAX_QTOKEN_COUNT;
 
     if (state->num_writable_fds > 0) {
         eventLoop->fired[0].fd = state->writable_fd_list[0];
@@ -213,7 +252,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
         recent_qrs_index = 0;
 
         if (retval == 0) {
-            for(int j = 0; j < recent_qrs_count; j++) {
+            for(size_t j = 0; j < recent_qrs_count; j++) {
                 const demi_qresult_t *qr = &qrs[j];
                 int ready_offset = ready_offsets[j];
 
@@ -234,9 +273,9 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         }
                         retval = 0;
                         #else
+                        // fprintf(stderr, "REDIS pop %d\n", qr->qr_qd);
                         retval = demi_pop(&qt, qr->qr_qd);
                         state->qtokens[ready_offset] = qt;
-                        // fprintf(stderr, "REDIS pop %d\n", qr->qr_qd);
                         #endif
                     }
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
@@ -265,8 +304,8 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     /* Not sure if this is the right way to indicate an error */            
                     panic("aeApiPoll: pop/accept, %s", strerror(retval));
                 }
-                eventLoop->fired[j].fd = qr->qr_qd;
-                eventLoop->fired[j].mask = mask;
+                eventLoop->fired[fired_index + j].fd = qr->qr_qd;
+                eventLoop->fired[fired_index + j].mask = mask;
             }
         } else {
             panic("aeApiPoll: demi_wait_any, %s", strerror(retval));
@@ -275,7 +314,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 	    panic("aeApiPoll: no events!");
     }
 
-    return recent_qrs_count;
+    return fired_index + recent_qrs_count;
 }
 
 static char *aeApiName(void) {

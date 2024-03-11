@@ -2042,9 +2042,12 @@ int handleClientsWithPendingWrites(void) {
         /* Try to write buffers to the client socket. */
         if (writeToClient(c,0) == C_ERR) continue;
 
+        // fprintf(stderr, "REDIS wrote QD %d\n", c->conn->fd);
+
         /* If after the synchronous writes above we still have data to
          * output to the client, we need to install the writable handler. */
         if (clientHasPendingReplies(c)) {
+            // fprintf(stderr, "REDIS deferring writes QD %d\n", c->conn->fd);
             installClientWriteHandler(c);
         }
     }

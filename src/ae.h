@@ -67,15 +67,11 @@ struct aeEventLoop;
 
 /* BIG HACK: We'll just keep the result here for now */
 #ifdef __DEMIKERNEL__
-#define MAX_RECENT_QRS_COUNT 1024
-extern demi_qresult_t recent_qrs[];
-extern int recent_qrs_count;
+#define MAX_QTOKEN_COUNT 4096
 
 demi_qresult_t *recent_qrs_pop(void);
+void push_qtoken(demi_qtoken_t qt);
 
-#ifdef __DEMIKERNEL_TCPMIG__
-void mark_for_migration(int fd);
-#endif
 #endif
 
 /* Types and data structures */

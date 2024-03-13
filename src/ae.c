@@ -425,6 +425,8 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             if(mask & (1 << 10)) {
                 aeDeleteFileEvent(eventLoop, fd, AE_READABLE | AE_WRITABLE);
                 redis_log("REDIS delete qd %d\n", fd);
+                // Skip the obtained result for this event.
+                recent_qrs_pop();
                 continue;
             }
             #endif

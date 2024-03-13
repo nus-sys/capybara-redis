@@ -38,20 +38,12 @@ size_t recent_qrs_count;
 size_t recent_qrs_index;
 
 demi_qresult_t *recent_qrs_pop(void) {
-    demi_qresult_t *popped;
-    while(1) {
-        if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
+    if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
 
-        redis_log("REDIS recent_qrs_pop index %lu\n", recent_qrs_index);
-        popped = recent_qrs + recent_qrs_index;
-        recent_qrs_index += 1;
-
-        if(popped->qr_opcode == DEMI_OPC_INVALID) {
-            redis_log("REDIS invalid recent_qrs_pop skipped\n");
-        } else {
-            break;
-        }
-    }
+    redis_log("REDIS recent_qrs_pop index %lu\n", recent_qrs_index);
+    demi_qresult_t *popped = recent_qrs + recent_qrs_index;
+    recent_qrs_index += 1;
+    
     return popped;
 }
 
@@ -388,8 +380,6 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     if (qr->qr_value.err == ETCPMIG) {
                         // We don't track this operation anymore.
                         mask |= (1 << 10);
-                        // Set opcode to invalid so recent_qrs_pop() skips this.
-                        qr->qr_opcode = DEMI_OPC_INVALID;
                         redis_log("REDIS ETCPMIG %d\n", qr->qr_qd);
                     }
                     else {

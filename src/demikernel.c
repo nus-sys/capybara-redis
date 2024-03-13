@@ -139,8 +139,8 @@ void redis_logn_cmd(const void *buf, const size_t len, int tx) {
     fputc('\n', stderr);
 }
 #else
-#define eprint_cmd(...) do {} while(0)
-#define eprintln_cmd(...) do {} while(0)
+#define redis_log_cmd(...) do {} while(0)
+#define redis_logn_cmd(...) do {} while(0)
 #endif /* __REDIS_LOG__ */
 
 static int demiSocketWrite(connection *conn, const void *data, size_t data_len) {

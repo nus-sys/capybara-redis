@@ -47,7 +47,6 @@ demi_qresult_t *recent_qrs_pop(void) {
 }
 
 demi_qtoken_t qtokens[MAX_QTOKEN_COUNT];
-demi_qresult_t qresults[MAX_QTOKEN_COUNT];
 size_t qtoken_count = 0;
 
 void push_qtoken(demi_qtoken_t qt) {
@@ -261,13 +260,13 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
         recent_qrs_count = 0;
         return 1;
     } else if (state->num_qtokens > 0 || qtoken_count > 0) {
-        redis_log("Push qtokens: ");
+        redis_log("Push qtokens (%lu): ", qtoken_count);
         for(size_t i = 0; i < qtoken_count; i++) {
             redis_log("%lu ", qtokens[i]);
         }
         redis_log(",  ");
 
-        redis_log("Pop qtokens: ");
+        redis_log("Pop qtokens (%lu): ", state->num_qtokens);
         for(size_t i = 0; i < state->num_qtokens; i++) {
             redis_log("%lu ", state->qtokens[i]);
         }
@@ -311,7 +310,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 
             redis_log("DONE Pop qtokens: ");
             for(size_t i = 0; i < qrs_count; i++) {
-                redis_log("[%d]%lu(%lu) ", qrs[i].qr_qd, qrs[i].qr_qt, qtokens[ready_offsets[i + push_qtoken_count]]);
+                redis_log("[%d]%lu(%lu) ", qrs[i].qr_qd, qrs[i].qr_qt, qtokens[ready_offsets[i]]);
             }
             redis_log("\n");
 
@@ -341,7 +340,9 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 
             for(size_t j = 0; j < qrs_count; j++) {
                 const demi_qresult_t *qr = &qrs[j];
-                int ready_offset = ready_offsets[j];
+
+                // We subtract number of push tokens because ready offsets are from the start of the full array, including push tokens.
+                int ready_offset = ready_offsets[j] - push_qtoken_count;
 
                 int mask = state->fd_mask_map[qr->qr_qd];
                 demi_qtoken_t qt = 100; // for debugging

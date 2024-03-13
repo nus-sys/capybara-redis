@@ -79,15 +79,18 @@ static int demiSocketConnect(connection *conn, const char *addr, int port, const
     aeCreateFileEvent(server.el, conn->fd, AE_WRITABLE,
                       conn->type->ae_handler, conn); */
 
+    UNUSED(src_addr);
+
     // TEMP
-    struct sockaddr_in address = {};
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
     address.sin_addr.s_addr = inet_addr(addr);
 
     int fd, retval;
     demi_qtoken_t qt;
-    demi_qresult_t qr = {};
+    demi_qresult_t qr;
     fprintf(stderr, "demi_socket() = %d\n", retval = demi_socket(&fd, AF_INET, SOCK_STREAM, 0));
     if(retval) while(1);
     fprintf(stderr, "demi_connect() = %d\n", retval = demi_connect(&qt, fd, (struct sockaddr *) &address, sizeof(address)));
@@ -146,7 +149,7 @@ void redis_logn_cmd(const void *buf, const size_t len, int tx) {
 static int demiSocketWrite(connection *conn, const void *data, size_t data_len) {
     demi_sgarray_t sga = demi_sgaalloc(data_len);
     demi_qtoken_t qt;
-    demi_qresult_t qr;
+    // demi_qresult_t qr;
     int ret;
 
 #ifdef __DEMIKERNEL_LOG_IO__
@@ -231,7 +234,7 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
         return 0;
     }
     
-    redis_log("REDIS read(qd %d, qt %lu) from %p %lu\n", qr->qr_qd, qr->qr_qt, qr->qr_value.sga.sga_segs[0].sgaseg_buf, qr->qr_value.sga.sga_segs[0].sgaseg_len);
+    redis_log("REDIS read(qd %d, qt %lu) from %p %u\n", qr->qr_qd, qr->qr_qt, qr->qr_value.sga.sga_segs[0].sgaseg_buf, qr->qr_value.sga.sga_segs[0].sgaseg_len);
 
     /* we can't do more sophisticated error handling yet
         else if (ret < 0 && errno != EAGAIN) {

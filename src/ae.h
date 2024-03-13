@@ -72,6 +72,12 @@ struct aeEventLoop;
 demi_qresult_t *recent_qrs_pop(void);
 void push_qtoken(demi_qtoken_t qt);
 
+#ifdef __REDIS_LOG__
+#define redis_log(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define redis_log(...) do { } while(0)
+#endif
+
 #endif
 
 /* Types and data structures */

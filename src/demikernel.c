@@ -122,8 +122,8 @@ static void demiSocketClose(connection *conn) {
     zfree(conn);
 }
 
-// #ifdef __DEMIKERNEL_LOG_IO__
-void eprint_cmd(const void *buf, const size_t len, int tx) {
+#ifdef __REDIS_LOG__
+void redis_log_cmd(const void *buf, const size_t len, int tx) {
     if(tx) fprintf(stderr, ">> ");
     for(size_t i = 0; i < len; i++) {
         char c = ((char *) buf)[i];
@@ -133,11 +133,15 @@ void eprint_cmd(const void *buf, const size_t len, int tx) {
     }
 }
 
-void eprintln_cmd(const void *buf, const size_t len, int tx) {
-    eprint_cmd(buf, len, tx);
+/// With line feed.
+void redis_logn_cmd(const void *buf, const size_t len, int tx) {
+    redis_log_cmd(buf, len, tx);
     fputc('\n', stderr);
 }
-// #endif /* __DEMIKERNEL_LOG_IO__ */
+#else
+#define eprint_cmd(...) do {} while(0)
+#define eprintln_cmd(...) do {} while(0)
+#endif /* __REDIS_LOG__ */
 
 static int demiSocketWrite(connection *conn, const void *data, size_t data_len) {
     demi_sgarray_t sga = demi_sgaalloc(data_len);
@@ -167,8 +171,8 @@ static int demiSocketWrite(connection *conn, const void *data, size_t data_len) 
     // Store push qtoken to be waited on later.
     push_qtoken(qt);
 
-    //fprintf(stderr, "REDIS write cmd = ");
-    //eprintln_cmd(data, data_len, 1);
+    redis_log("REDIS write cmd = ");
+    redis_logn_cmd(data, data_len, 1);
 
     demi_sgafree(&sga);
     return data_len;
@@ -196,6 +200,8 @@ static int demiSocketWritev(connection *conn, const struct iovec *iov, int iovcn
     eprintln_cmd(sga.sga_segs[0].sgaseg_buf, offset - (char *)sga.sga_segs[0].sgaseg_buf, 1);
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
+    redis_log("HIREDIS demiSocketWritev\n");
+
     if (((ret = demi_push(&qt, conn->fd, &sga)) != 0 ||
          (ret = demi_wait(&qr, qt)) != 0) &&
         errno != EAGAIN) {
@@ -221,8 +227,11 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
         qr->qr_value.sga.sga_segs[0].sgaseg_buf == NULL ||
         qr->qr_opcode != DEMI_OPC_POP) {
         //        conn->state = CONN_STATE_CLOSED;
+        redis_log("REDIS read(qd %d, qt %lu) invalid\n", qr->qr_qd, qr->qr_qt);
         return 0;
     }
+    
+    redis_log("REDIS read(qd %d, qt %lu) from %p %lu\n", qr->qr_qd, qr->qr_qt, qr->qr_value.sga.sga_segs[0].sgaseg_buf, qr->qr_value.sga.sga_segs[0].sgaseg_len);
 
     /* we can't do more sophisticated error handling yet
         else if (ret < 0 && errno != EAGAIN) {
@@ -248,8 +257,8 @@ static int demiSocketRead(connection *conn, void *buf, size_t buf_len) {
     eprintln_cmd(buf, read_len, 0);
 #endif /* __DEMIKERNEL_LOG_IO__ */
 
-    //fprintf(stderr, "REDIS read cmd = ");
-    //eprintln_cmd(buf, read_len, 1);
+    redis_log("REDIS read cmd = ");
+    redis_logn_cmd(buf, read_len, 1);
 
     //Irene: Use memory freely for debugging
     demi_sgafree(&qr->qr_value.sga);
@@ -372,7 +381,7 @@ static ssize_t demiSocketSyncWrite(connection *conn, char *ptr, ssize_t size, lo
 }
 
 static ssize_t demiSocketSyncRead(connection *conn, char *ptr, ssize_t size, long long timeout) {
-    fprintf(stderr, "demiSocketSyncRead()\n");
+    fprintf(stderr, "HIREDIS demiSocketSyncRead()\n");
     UNUSED(timeout);
 
     demi_qtoken_t qt;

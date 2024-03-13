@@ -424,7 +424,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
             // If this flag is set, connection was migrated. Remove this connection.
             if(mask & (1 << 10)) {
                 aeDeleteFileEvent(eventLoop, fd, AE_READABLE | AE_WRITABLE);
-                // fprintf(stderr, "REDIS delete qd %d\n", fd);
+                redis_log("REDIS delete qd %d\n", fd);
                 continue;
             }
             #endif
@@ -449,7 +449,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              * Fire the readable event if the call sequence is not
              * inverted. */
             if (!invert && fe->mask & mask & AE_READABLE) {
-                // fprintf(stderr, "REDIS read proc QD %d\n", fd);
+                redis_log("REDIS read proc QD %d\n", fd);
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
@@ -457,7 +457,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
             /* Fire the writable event. */
             if (fe->mask & mask & AE_WRITABLE) {
-                // fprintf(stderr, "REDIS write proc QD %d\n", fd);
+                redis_log("REDIS write proc QD %d\n", fd);
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->wfileProc(eventLoop,fd,fe->clientData,mask);
                     fired++;
@@ -471,7 +471,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 if ((fe->mask & mask & AE_READABLE) &&
                     (!fired || fe->wfileProc != fe->rfileProc))
                 {
-                    // fprintf(stderr, "REDIS read proc QD %d\n", fd);
+                    redis_log("REDIS read proc QD %d\n", fd);
                     fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                     fired++;
                 }

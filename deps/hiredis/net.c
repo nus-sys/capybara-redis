@@ -74,6 +74,8 @@ ssize_t redisNetRead(redisContext *c, char *buf, size_t bufcap) {
 #ifdef __DEMIKERNEL__
     (void) bufcap;
 
+    fprintf(stderr, "HIREDIS redisNetRead\n");
+
     demi_qresult_t *qr = (demi_qresult_t *)c->privdata;
     demi_qresult_t new_qr;
     if (!qr ||
@@ -127,7 +129,7 @@ ssize_t redisNetWrite(redisContext *c) {
     demi_qresult_t qr;
     int ret;
 
-    fprintf(stderr, "HIREDIS\n");
+    fprintf(stderr, "HIREDIS redisNetWrite\n");
 
     memcpy(sga.sga_segs[0].sgaseg_buf, c->obuf, nwritten);
 
@@ -634,6 +636,8 @@ addrretry:
             redisNetClose(c);
             continue;
         } 
+        fprintf(stderr, "HIREDIS _redisContextConnectTcp\n");
+        
         retval = demi_wait(&qr, qt);
         /* Demikernel doesn't use errno but just passes the value back */
         if (retval != 0) errno = retval;

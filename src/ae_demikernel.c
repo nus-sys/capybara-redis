@@ -30,6 +30,7 @@
 
 #include <demi/wait.h>
 #include <demi/libos.h>
+#include <string.h>
 
 /* BIG HACK: We'll just keep the result here for now */
 demi_qresult_t recent_qrs[MAX_QTOKEN_COUNT];
@@ -39,22 +40,23 @@ size_t recent_qrs_index;
 demi_qresult_t *recent_qrs_pop(void) {
     if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
 
+    redis_log("REDIS recent_qrs_pop index %lu\n", recent_qrs_index);
     demi_qresult_t *popped = recent_qrs + recent_qrs_index;
     recent_qrs_index += 1;
     return popped;
 }
 
-demi_qtoken_t push_qtokens[MAX_QTOKEN_COUNT];
-demi_qresult_t push_qresults[MAX_QTOKEN_COUNT];
-size_t push_qtoken_count = 0;
+demi_qtoken_t qtokens[MAX_QTOKEN_COUNT];
+demi_qresult_t qresults[MAX_QTOKEN_COUNT];
+size_t qtoken_count = 0;
 
 void push_qtoken(demi_qtoken_t qt) {
-    if(push_qtoken_count == MAX_QTOKEN_COUNT) panic("Too many push qtokens");
-    push_qtokens[push_qtoken_count++] = qt;
+    if(qtoken_count == MAX_QTOKEN_COUNT) panic("Too many push qtokens");
+    qtokens[qtoken_count++] = qt;
 }
 
-inline void reset_push_qtokens(void) {
-    push_qtoken_count = 0;
+inline void reset_qtokens(void) {
+    qtoken_count = 0;
 }
 
 
@@ -201,10 +203,13 @@ static void aeApiDelEvent(aeEventLoop *eventLoop, int fd, int delmask) {
     //printf("Delete(mask=%u): num read events=%lu num write events=%lu\n", delmask, state->num_qtokens, state->num_writable_fds);
 }
 
+#include <stdlib.h>
+
 static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     (void) tvp;
 
-    static size_t ready_offsets[MAX_QTOKEN_COUNT];
+    static size_t ready_offsets_storage[MAX_QTOKEN_COUNT];
+    size_t *ready_offsets = ready_offsets_storage;
 
     #ifdef __MANUAL_TCPMIG__
     static int mig_per_n[4096] = {};
@@ -215,31 +220,39 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
     demi_qresult_t *qrs = recent_qrs;
     recent_qrs_count = MAX_QTOKEN_COUNT;
 
-    // Wait for push tokens.
-    retval = demi_wait_any(push_qresults, ready_offsets, &recent_qrs_count, push_qtokens, push_qtoken_count, 0);
-    if(retval != 0 || recent_qrs_count != push_qtoken_count) {
-        panic("Push tokens wait error");
-    }
-    size_t fired_index = 0;
-    for(size_t j = 0; j < recent_qrs_count; j++) {
-        const demi_qresult_t *qr = &push_qresults[j];
-        if(qr->qr_opcode == DEMI_OPC_FAILED) {
-            #ifdef __DEMIKERNEL_TCPMIG__
-            if(qr->qr_value.err == ETCPMIG) {
-                eventLoop->fired[fired_index].fd = qr->qr_qd;
-                eventLoop->fired[fired_index].mask = state->fd_mask_map[qr->qr_qd] | (1 << 10);
-                fired_index += 1;
-                // fprintf(stderr, "REDIS ETCPMIG (push) %d\n", qr->qr_qd);
-            } else {
-                panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
-            }
-            #else
-            panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
-            #endif
-        }
-    }
-    reset_push_qtokens();
-    recent_qrs_count = MAX_QTOKEN_COUNT;
+    // setenv("WHICH_WAIT", "push", 1);
+
+    // // Wait for push tokens.
+    // retval = demi_wait_any(qresults, ready_offsets, &recent_qrs_count, qtokens, qtoken_count, 0);
+    // if(retval != 0 || recent_qrs_count != qtoken_count) {
+    //     panic("Push tokens wait error");
+    // }
+    // unsetenv("WHICH_WAIT");
+
+    // #ifdef __REDIS_LOG__
+    // redis_log("REDIS after push event loop: %lu results\n", recent_qrs_count);
+    // #endif
+
+    // size_t fired_index = 0;
+    // for(size_t j = 0; j < recent_qrs_count; j++) {
+    //     const demi_qresult_t *qr = &qresults[j];
+    //     if(qr->qr_opcode == DEMI_OPC_FAILED) {
+    //         #ifdef __DEMIKERNEL_TCPMIG__
+    //         if(qr->qr_value.err == ETCPMIG) {
+    //             eventLoop->fired[fired_index].fd = qr->qr_qd;
+    //             eventLoop->fired[fired_index].mask = state->fd_mask_map[qr->qr_qd] | (1 << 10);
+    //             fired_index += 1;
+    //             redis_log("REDIS ETCPMIG (push) %d\n", qr->qr_qd);
+    //         } else {
+    //             panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+    //         }
+    //         #else
+    //         panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+    //         #endif
+    //     }
+    // }
+    // reset_qtokens();
+    // recent_qrs_count = MAX_QTOKEN_COUNT;
 
     if (state->num_writable_fds > 0) {
         eventLoop->fired[0].fd = state->writable_fd_list[0];
@@ -247,12 +260,86 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
         recent_qrs_index = 0;
         recent_qrs_count = 0;
         return 1;
-    } else if (state->num_qtokens > 0) {
-        retval = demi_wait_any(qrs, ready_offsets, &recent_qrs_count, state->qtokens, state->num_qtokens, 500);
+    } else if (state->num_qtokens > 0 || qtoken_count > 0) {
+        redis_log("Push qtokens: ");
+        for(size_t i = 0; i < qtoken_count; i++) {
+            redis_log("%lu ", qtokens[i]);
+        }
+        redis_log(",  ");
+
+        redis_log("Pop qtokens: ");
+        for(size_t i = 0; i < state->num_qtokens; i++) {
+            redis_log("%lu ", state->qtokens[i]);
+        }
+        redis_log("\n");
+
+        // Copy qtokens from event loop state to global list of qtokens.
+        memcpy(&qtokens[qtoken_count], state->qtokens, state->num_qtokens * sizeof(demi_qtoken_t));
+        size_t push_qtoken_count = qtoken_count;
+        qtoken_count += state->num_qtokens;
+
+        memset(qrs, 0, sizeof(demi_qresult_t) * MAX_QTOKEN_COUNT);
+
+        setenv("WHICH_WAIT", "normal", 1);
+        retval = demi_wait_any(qrs, ready_offsets, &recent_qrs_count, qtokens, qtoken_count, 500);
+        unsetenv("WHICH_WAIT");
         recent_qrs_index = 0;
 
         if (retval == 0) {
-            for(size_t j = 0; j < recent_qrs_count; j++) {
+            // Ensure that all push operations have been completed and removed.
+            if(recent_qrs_count < push_qtoken_count) {
+                panic("all push qtokens not completed");
+            }
+            redis_log("DONE Push qtokens: ");
+            for(size_t j = 0; j < push_qtoken_count; j++) {
+                if(ready_offsets[j] != j) {
+                    panic("all push qtokens not completed");
+                }
+                // Remove each push qresult.
+                demi_qresult_t *r = recent_qrs_pop();
+                redis_log("%lu(%lu) ", r->qr_qt, qtokens[j]);
+            }
+            redis_log("\n");
+
+            // Now we can safely ignore the push qtokens and focus on the pop/accept qtokens.
+            reset_qtokens();
+            size_t qrs_count = recent_qrs_count - recent_qrs_index;
+            ready_offsets += push_qtoken_count;
+            qrs += push_qtoken_count;
+
+            redis_log("REDIS poll results: %lu = %lu (push) + %lu (pop)\n", recent_qrs_count, push_qtoken_count, qrs_count);
+
+            redis_log("DONE Pop qtokens: ");
+            for(size_t i = 0; i < qrs_count; i++) {
+                redis_log("[%d]%lu(%lu) ", qrs[i].qr_qd, qrs[i].qr_qt, qtokens[ready_offsets[i + push_qtoken_count]]);
+            }
+            redis_log("\n");
+
+            // #ifdef __REDIS_LOG__
+            // redis_log("REDIS after pop event loop: %lu results\n", recent_qrs_count);
+            // #endif
+
+            // Get rid of all push qtoken results first.
+            // size_t fired_index = 0;
+            // for(size_t j = 0; j < push_qtoken_count; j++) {
+            //     const demi_qresult_t *qr = &qresults[j];
+            //     if(qr->qr_opcode == DEMI_OPC_FAILED) {
+            //         #ifdef __DEMIKERNEL_TCPMIG__
+            //         if(qr->qr_value.err == ETCPMIG) {
+            //             eventLoop->fired[fired_index].fd = qr->qr_qd;
+            //             eventLoop->fired[fired_index].mask = state->fd_mask_map[qr->qr_qd] | (1 << 10);
+            //             fired_index += 1;
+            //             redis_log("REDIS ETCPMIG (push) %d\n", qr->qr_qd);
+            //         } else {
+            //             panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+            //         }
+            //         #else
+            //         panic("push qtoken poll failed, %s", strerror(qr->qr_value.err));
+            //         #endif
+            //     }
+            // }
+
+            for(size_t j = 0; j < qrs_count; j++) {
                 const demi_qresult_t *qr = &qrs[j];
                 int ready_offset = ready_offsets[j];
 
@@ -273,7 +360,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                         }
                         retval = 0;
                         #else
-                        // fprintf(stderr, "REDIS pop %d\n", qr->qr_qd);
+                        redis_log("REDIS pop %d\n", qr->qr_qd);
                         retval = demi_pop(&qt, qr->qr_qd);
                         state->qtokens[ready_offset] = qt;
                         #endif
@@ -281,7 +368,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                 } else if (qr->qr_opcode == DEMI_OPC_ACCEPT) {
                     retval = demi_accept(&qt, qr->qr_qd);
                     state->qtokens[ready_offset] = qt;
-                    // fprintf(stderr, "REDIS accept %d\n", qr->qr_value.ares.qd);
+                    redis_log("REDIS accept %d\n", qr->qr_value.ares.qd);
 
                     #ifdef __MANUAL_TCPMIG__
                     mig_per_n[qr->qr_value.ares.qd] = 1;
@@ -291,7 +378,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     if (qr->qr_value.err == ETCPMIG) {
                         // We don't track this operation anymore.
                         mask |= (1 << 10);
-                        // fprintf(stderr, "REDIS ETCPMIG %d\n", qr->qr_qd);
+                        redis_log("REDIS ETCPMIG %d\n", qr->qr_qd);
                     }
                     else {
                         panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
@@ -299,13 +386,15 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     #else
                     panic("aeApiPoll: poll failed pop/accept, %s", strerror(qr->qr_value.err));
                     #endif
+                } else {
+                    panic("aeApiPoll: invalid qresult opcode: %d", qr->qr_opcode);
                 }
                 if (retval != 0) {
                     /* Not sure if this is the right way to indicate an error */            
                     panic("aeApiPoll: pop/accept, %s", strerror(retval));
                 }
-                eventLoop->fired[fired_index + j].fd = qr->qr_qd;
-                eventLoop->fired[fired_index + j].mask = mask;
+                eventLoop->fired[j].fd = qr->qr_qd;
+                eventLoop->fired[j].mask = mask;
             }
         } else {
             panic("aeApiPoll: demi_wait_any, %s", strerror(retval));
@@ -314,7 +403,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
 	    panic("aeApiPoll: no events!");
     }
 
-    return fired_index + recent_qrs_count;
+    return recent_qrs_count - recent_qrs_index;
 }
 
 static char *aeApiName(void) {

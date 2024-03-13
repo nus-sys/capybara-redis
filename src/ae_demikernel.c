@@ -38,11 +38,20 @@ size_t recent_qrs_count;
 size_t recent_qrs_index;
 
 demi_qresult_t *recent_qrs_pop(void) {
-    if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
+    demi_qresult_t *popped;
+    while(1) {
+        if(recent_qrs_index >= recent_qrs_count) panic("Popped empty recent_qrs");
 
-    redis_log("REDIS recent_qrs_pop index %lu\n", recent_qrs_index);
-    demi_qresult_t *popped = recent_qrs + recent_qrs_index;
-    recent_qrs_index += 1;
+        redis_log("REDIS recent_qrs_pop index %lu\n", recent_qrs_index);
+        popped = recent_qrs + recent_qrs_index;
+        recent_qrs_index += 1;
+
+        if(popped->qr_opcode == DEMI_OPC_INVALID) {
+            redis_log("REDIS invalid recent_qrs_pop skipped\n");
+        } else {
+            break;
+        }
+    }
     return popped;
 }
 
@@ -339,7 +348,7 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
             // }
 
             for(size_t j = 0; j < qrs_count; j++) {
-                const demi_qresult_t *qr = &qrs[j];
+                demi_qresult_t *qr = &qrs[j];
 
                 // We subtract number of push tokens because ready offsets are from the start of the full array, including push tokens.
                 int ready_offset = ready_offsets[j] - push_qtoken_count;
@@ -379,6 +388,8 @@ static int aeApiPoll(aeEventLoop *eventLoop, struct timeval *tvp) {
                     if (qr->qr_value.err == ETCPMIG) {
                         // We don't track this operation anymore.
                         mask |= (1 << 10);
+                        // Set opcode to invalid so recent_qrs_pop() skips this.
+                        qr->qr_opcode = DEMI_OPC_INVALID;
                         redis_log("REDIS ETCPMIG %d\n", qr->qr_qd);
                     }
                     else {

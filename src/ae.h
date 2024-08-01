@@ -60,6 +60,13 @@
 /* Macros */
 #define AE_NOTUSED(V) ((void) V)
 
+#ifdef __REDIS_LOG__
+#define redis_log(...) do { fprintf(stderr, __VA_ARGS__); } while(0)
+#else
+#define redis_log(...) do { } while(0)
+#endif
+
+
 struct aeEventLoop;
 
 /* Types and data structures */

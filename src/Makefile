@@ -120,6 +120,10 @@ FINAL_LDFLAGS=$(LDFLAGS) $(REDIS_LDFLAGS) $(DEBUG)
 FINAL_LIBS=-lm
 DEBUG=-g -ggdb
 
+ifeq ($(REDIS_LOG),1)
+FINAL_CFLAGS+=-D__REDIS_LOG__
+endif
+
 # Linux ARM32 needs -latomic at linking time
 ifneq (,$(findstring armv,$(uname_M)))
         FINAL_LIBS+=-latomic

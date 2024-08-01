@@ -433,6 +433,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
              * Fire the readable event if the call sequence is not
              * inverted. */
             if (!invert && fe->mask & mask & AE_READABLE) {
+                redis_log("REDIS read proc QD %d\n", fd);
                 fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                 fired++;
                 fe = &eventLoop->events[fd]; /* Refresh in case of resize. */
@@ -440,6 +441,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
 
             /* Fire the writable event. */
             if (fe->mask & mask & AE_WRITABLE) {
+                redis_log("REDIS write proc QD %d\n", fd);
                 if (!fired || fe->wfileProc != fe->rfileProc) {
                     fe->wfileProc(eventLoop,fd,fe->clientData,mask);
                     fired++;
@@ -453,6 +455,7 @@ int aeProcessEvents(aeEventLoop *eventLoop, int flags)
                 if ((fe->mask & mask & AE_READABLE) &&
                     (!fired || fe->wfileProc != fe->rfileProc))
                 {
+                    redis_log("REDIS read proc QD %d\n", fd);
                     fe->rfileProc(eventLoop,fd,fe->clientData,mask);
                     fired++;
                 }

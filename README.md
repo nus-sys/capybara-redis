@@ -1,5 +1,32 @@
 # Running
 
+## `running with TLS (Way 1)` 
+`openssl genrsa -out ca.key 4096`
+`openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt`
+
+
+`openssl genrsa -out redis-server.key 4096`
+`openssl req -new -key redis-server.key -out redis-server.csr`
+For CN, use the IP address of server
+`openssl x509 -req -in redis-server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out redis-server.crt -days 365 -sha256`
+
+`openssl genrsa -out redis-client.key 4096`
+`openssl req -new -key redis-client.key -out redis-client.csr`
+For CN, use the IP address of client
+`openssl x509 -req -in redis-client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out redis-client.crt -days 365 -sha256`
+
+To verify:
+`openssl verify -CAfile ./ca.crt ./redis-server.crt`
+
+## `running with TLS (Way 2)` 
+`openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout redis-server.key -out redis-server.crt -subj "/C=SG/ST=Singapore/L=Singapore/O=NUS/OU=NUS/CN=10.0.1.8"`
+`openssl verify -CAfile redis-server.crt redis-server.crt`
+
+Then, use this crt and key for both client and server:
+`~/redis-cli-tls --tls     --cert ../tests/tls3/redis-server.crt     --key ../tests/tls3/redis-server.key     --cacert ../tests/tls3/redis-server.crt     -h 10.0.1.8 -p 10000`
+
+
+
 ## `redis-server`
 Running `redis-server` using Capybara is completely from Capybara's Makefile.
 

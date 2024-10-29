@@ -1,5 +1,10 @@
 # Running
 
+## redis-benchmark 
+- `./src/redis-benchmark --tls     --cert /usr/local/tls/svr.crt     --key /usr/local/tls/svr.key     --cacert /usr/local/tls/CA.pem     -h 10.0.1.9 -p 10000 -c 1 -n 15 -t PING_INLINE`
+
+
+
 ## `running with TLS (Way 1)` 
 `openssl genrsa -out ca.key 4096`
 `openssl req -x509 -new -nodes -key ca.key -sha256 -days 3650 -out ca.crt`

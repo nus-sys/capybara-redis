@@ -4,6 +4,13 @@
 - `./src/redis-benchmark --tls     --cert /usr/local/tls/svr.crt     --key /usr/local/tls/svr.key     --cacert /usr/local/tls/CA.pem     -h 10.0.1.9 -p 10000 -c 1 -n 15 -t PING_INLINE`
 
 
+## How to preload redis-server using Caladan? 
+- In the redis config file, set `appendonly yes` and `appenddirname "appendonlydir"`
+- In caladan, run: `sudo numactl -m0 ./apps/synthetic/target/release/synthetic  10.0.1.8:10000  --config ./client.config  --mode runtime-client  --protocol=resp --redis-string=3  --transport=tcp  --samples=1  --pps=3  --threads=2  --runtime=3  --discard_pct=10  --output=trace  --rampup=0` (--redis-string=3 means it will preload string0 to string2)
+- After the above is done, terminate redis-server
+- check `capybara-redis/src/appendonlydir/appendonly.aof.1.incr.aof`. It will show the preloaded keys.
+- In the redis config file, set `appendonly no` and run redis-server again. It's preloaded. 
+
 
 ## `running with TLS (Way 1)` 
 `openssl genrsa -out ca.key 4096`

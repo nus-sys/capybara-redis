@@ -40,7 +40,8 @@ ifneq (,$(findstring FreeBSD,$(uname_S)))
   STD+=-Wno-c11-extensions
 endif
 endif
-WARN=-Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes
+# WARN=-Wall -W -Wno-missing-field-initializers -Werror=deprecated-declarations -Wstrict-prototypes
+WARN=-Wall -W -Wno-missing-field-initializers -Wstrict-prototypes
 OPT=$(OPTIMIZATION)
 
 # Detect if the compiler supports C11 _Atomic.

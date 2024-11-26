@@ -897,7 +897,7 @@ void getRandomBytes(unsigned char *p, size_t len) {
 
         /* Obtain HASH(IKEY||MESSAGE). */
         SHA256_CTX ctx;
-        sha256_init(&ctx);
+        sha256_init2(&ctx);
         sha256_update(&ctx,kxor,sizeof(kxor));
         sha256_update(&ctx,(unsigned char*)&counter,sizeof(counter));
         sha256_final(&ctx,digest);
@@ -907,7 +907,7 @@ void getRandomBytes(unsigned char *p, size_t len) {
         for (unsigned int i = 0; i < sizeof(kxor); i++) kxor[i] ^= 0x5C;
 
         /* Obtain HASH(OKEY || HASH(IKEY||MESSAGE)). */
-        sha256_init(&ctx);
+        sha256_init2(&ctx);
         sha256_update(&ctx,kxor,sizeof(kxor));
         sha256_update(&ctx,digest,SHA256_BLOCK_SIZE);
         sha256_final(&ctx,digest);

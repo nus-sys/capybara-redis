@@ -175,7 +175,7 @@ sds ACLHashPassword(unsigned char *cleartext, size_t len) {
     char hex[HASH_PASSWORD_LEN];
     char *cset = "0123456789abcdef";
 
-    sha256_init(&ctx);
+    sha256_init2(&ctx);
     sha256_update(&ctx,(unsigned char*)cleartext,len);
     sha256_final(&ctx,hash);
 

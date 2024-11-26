@@ -30,6 +30,9 @@
 #include "server.h"
 #include "connhelpers.h"
 
+#define TLS_AMALGAMATION
+#include "tlse/tlse.c"
+
 /* The connections module provides a lean abstraction of network connections
  * to avoid direct socket and async event management across the Redis code base.
  *
@@ -74,6 +77,57 @@ static ConnectionType CT_Socket;
  * be embedded in different structs, not just client.
  */
 
+
+int read_from_file(const char *fname, void *buf, int max_len) {
+    FILE *f = fopen(fname, "rb");
+    if (f) {
+        int size = fread(buf, 1, max_len - 1, f);
+        if (size > 0)
+            ((unsigned char *)buf)[size] = 0;
+        else
+            ((unsigned char *)buf)[0] = 0;
+        fclose(f);
+        return size;
+    }
+    return 0;
+}
+
+void load_keys(struct TLSContext *context, char *fname, char *priv_fname) {
+    unsigned char buf[0xFFFF];
+    unsigned char buf2[0xFFFF];
+    int size = read_from_file(fname, buf, 0xFFFF);
+    int size2 = read_from_file(priv_fname, buf2, 0xFFFF);
+    if (size > 0 && context) {
+        tls_load_certificates(context, buf, size);
+        tls_load_private_key(context, buf2, size2);
+        // tls_print_certificate(fname);
+    }
+}
+
+struct TLSContext *server_context;
+
+#define MAX_CONNECTIONS 64
+struct ContextEntry {
+    int fd;
+    struct TLSContext *context;
+} context_table[MAX_CONNECTIONS];
+
+
+static int connSocketConfigure(void *privdata, int reconfigure) {
+    UNUSED(privdata);
+    UNUSED(reconfigure);
+    server_context = tls_create_context(1, TLS_V12);
+    load_keys(
+        server_context, "/usr/local/tls/svr.crt", "/usr/local/tls/svr.key");
+    serverLog(LL_VERBOSE,"TLS server context ready %p", (void *)server_context);
+
+    for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
+        context_table[i].fd = -1;
+        context_table[i].context = NULL;
+    }
+    return C_OK;
+}
+
 static connection *connCreateSocket(void) {
     connection *conn = zcalloc(sizeof(connection));
     conn->type = &CT_Socket;
@@ -98,6 +152,20 @@ static connection *connCreateAcceptedSocket(int fd, void *priv) {
     connection *conn = connCreateSocket();
     conn->fd = fd;
     conn->state = CONN_STATE_ACCEPTING;
+
+    struct ContextEntry *entry = NULL;
+    for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
+        if (context_table[i].fd == -1) {
+            entry = &context_table[i];
+            break;
+        }
+    }
+    if (!entry) {
+        serverLog(LL_WARNING,"Context table exhausted");
+        return NULL;
+    }
+    entry->fd = fd;
+    entry->context = tls_accept(server_context);
     return conn;
 }
 
@@ -117,6 +185,7 @@ static int connSocketConnect(connection *conn, const char *addr, int port, const
     aeCreateFileEvent(server.el, conn->fd, AE_WRITABLE,
             conn->type->ae_handler, conn);
 
+    serverLog(LL_WARNING,"Client side TLS is not implemented");
     return C_OK;
 }
 
@@ -132,11 +201,31 @@ static void connSocketShutdown(connection *conn) {
     shutdown(conn->fd, SHUT_RDWR);
 }
 
+struct ContextEntry *find_context_entry(int fd) {
+    struct ContextEntry *entry = NULL;
+    for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
+        if (context_table[i].fd == fd) {
+            entry = &context_table[i];
+            break;
+        }
+    }
+    if (!entry) {
+        serverLog(LL_WARNING,"TLS context not found for fd = %d", fd);
+    }
+    return entry;
+}
+
 /* Close the connection and free resources. */
 static void connSocketClose(connection *conn) {
     if (conn->fd != -1) {
         aeDeleteFileEvent(server.el,conn->fd, AE_READABLE | AE_WRITABLE);
         close(conn->fd);
+
+        struct ContextEntry *entry = find_context_entry(conn->fd);
+        entry->fd = -1;
+        tls_destroy_context(entry->context);
+        entry->context = NULL;
+
         conn->fd = -1;
     }
 
@@ -152,7 +241,11 @@ static void connSocketClose(connection *conn) {
 }
 
 static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
-    int ret = write(conn->fd, data, data_len);
+    struct TLSContext *context = find_context_entry(conn->fd)->context;
+    tls_write(context, data, data_len);
+    unsigned int buf_len;
+    const unsigned char *buf = tls_get_write_buffer(context, &buf_len);
+    int ret = write(conn->fd, (void *)buf, buf_len);
     if (ret < 0 && errno != EAGAIN) {
         conn->last_errno = errno;
 
@@ -167,7 +260,13 @@ static int connSocketWrite(connection *conn, const void *data, size_t data_len) 
 }
 
 static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
-    int ret = writev(conn->fd, iov, iovcnt);
+    struct TLSContext *context = find_context_entry(conn->fd)->context;
+    for (int i = 0; i < iovcnt; i += 1) {
+        tls_write(context, iov[i].iov_base, iov[i].iov_len);
+    }
+    unsigned int buf_len;
+    const unsigned char *buf = tls_get_write_buffer(context, &buf_len);
+    int ret = write(conn->fd, (void *)buf, buf_len);
     if (ret < 0 && errno != EAGAIN) {
         conn->last_errno = errno;
 
@@ -182,7 +281,9 @@ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcn
 }
 
 static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
-    int ret = read(conn->fd, buf, buf_len);
+#define READ_BUF_SIZE 4096
+    unsigned char read_buf[READ_BUF_SIZE];
+    int ret = read(conn->fd, read_buf, READ_BUF_SIZE);
     if (!ret) {
         conn->state = CONN_STATE_CLOSED;
     } else if (ret < 0 && errno != EAGAIN) {
@@ -195,6 +296,9 @@ static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
             conn->state = CONN_STATE_ERROR;
     }
 
+    struct TLSContext *context = find_context_entry(conn->fd)->context;
+    tls_consume_stream(context, read_buf, ret, NULL);
+    ret = tls_read(context, buf, buf_len);
     return ret;
 }
 
@@ -350,6 +454,7 @@ static int connSocketListen(connListener *listener) {
 }
 
 static int connSocketBlockingConnect(connection *conn, const char *addr, int port, long long timeout) {
+    serverLog(LL_WARNING,"TLS is not implemented for blocking connect");
     int fd = anetTcpNonBlockConnect(NULL,addr,port);
     if (fd == -1) {
         conn->state = CONN_STATE_ERROR;
@@ -372,14 +477,17 @@ static int connSocketBlockingConnect(connection *conn, const char *addr, int por
  */
 
 static ssize_t connSocketSyncWrite(connection *conn, char *ptr, ssize_t size, long long timeout) {
+    serverLog(LL_WARNING,"TLS is not implemented for sync write");
     return syncWrite(conn->fd, ptr, size, timeout);
 }
 
 static ssize_t connSocketSyncRead(connection *conn, char *ptr, ssize_t size, long long timeout) {
+    serverLog(LL_WARNING,"TLS is not implemented for sync read");
     return syncRead(conn->fd, ptr, size, timeout);
 }
 
 static ssize_t connSocketSyncReadLine(connection *conn, char *ptr, ssize_t size, long long timeout) {
+    serverLog(LL_WARNING,"TLS is not implemented for sync read line");
     return syncReadLine(conn->fd, ptr, size, timeout);
 }
 
@@ -396,7 +504,7 @@ static ConnectionType CT_Socket = {
     /* connection type initialize & finalize & configure */
     .init = NULL,
     .cleanup = NULL,
-    .configure = NULL,
+    .configure = connSocketConfigure,
 
     /* ae & accept & listen & error & address handler */
     .ae_handler = connSocketEventHandler,

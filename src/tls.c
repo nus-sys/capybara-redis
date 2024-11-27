@@ -30,6 +30,7 @@
 #include "server.h"
 #include "connhelpers.h"
 
+#define NO_TLS_LEGACY_SUPPORT
 #define TLS_AMALGAMATION
 #include "tlse/tlse.c"
 
@@ -108,12 +109,11 @@ void load_keys(struct TLSContext *context, char *fname, char *priv_fname) {
 
 struct TLSContext *server_context;
 
-#define MAX_CONNECTIONS 64
+#define MAX_CONNECTIONS 1024
 struct ContextEntry {
     int fd;
     struct TLSContext *context;
 } context_table[MAX_CONNECTIONS];
-
 
 static int socketConfigure(void *privdata, int reconfigure) {
     UNUSED(privdata);
@@ -159,8 +159,12 @@ static connection *connCreateAcceptedSocket(int fd, void *priv) {
 
     struct ContextEntry *entry = NULL;
     for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
+        if (context_table[i].fd == fd) {
+            serverLog(LL_NOTICE,"Discovered migrated context at slot %d", i);
+            return conn; // bad code smell, forgive me
+        }
         if (context_table[i].fd == -1) {
-        serverLog(LL_VERBOSE,"Allocate context table slot %d", i);
+            serverLog(LL_VERBOSE,"Allocate context table slot %d", i);
             entry = &context_table[i];
             break;
         }
@@ -335,9 +339,15 @@ static int connSocketAccept(connection *conn, ConnectionCallbackFunc accept_hand
     if (conn->state != CONN_STATE_ACCEPTING) return C_ERR;
 
     struct ContextEntry *entry = find_context_entry(conn->fd);
-    entry->context = tls_accept(server_context);
+    if (entry->context) {
+        serverLog(LL_NOTICE, "shortcut tls handshake for migrated connection");
+        conn->state = CONN_STATE_CONNECTED;
+    } else {
+        entry->context = tls_accept(server_context);
+        tls_make_exportable(entry->context, 1);
+    }
     conn->conn_handler = accept_handler;
-    aeCreateFileEvent(server.el, conn->fd, AE_READABLE,connSocketEventHandler, conn);
+    // aeCreateFileEvent(server.el, conn->fd, AE_READABLE | AE_WRITABLE,connSocketEventHandler, conn);
     return ret;
 }
 
@@ -386,8 +396,12 @@ static const char *connSocketGetLastError(connection *conn) {
 
 static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask)
 {
-    UNUSED(el);
     connection *conn = clientData;
+
+    if (!find_context_entry(fd)) {
+        serverLog(LL_NOTICE, "Clean up event loop for missing fd=%d", fd);
+        aeDeleteFileEvent(el, fd, AE_READABLE | AE_WRITABLE);
+    }
 
     serverLog(LL_VERBOSE, "TLS connSocketEventHandler(): fd=%d, state=%d, mask=%d, r=%d, w=%d, flags=%d",
         fd, conn->state, mask, conn->read_handler != NULL, conn->write_handler != NULL, conn->flags);
@@ -442,7 +456,6 @@ static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientD
             if (!callHandler((connection *) conn, conn->conn_handler)) return;
             conn->conn_handler = NULL;
         } else {
-            aeCreateFileEvent(server.el, conn->fd, AE_READABLE,connSocketEventHandler, conn);
             return;
         }
     }
@@ -627,3 +640,63 @@ int RedisRegisterConnectionTypeTLS(void)
 {
     return connTypeRegister(&CT_Socket);
 }
+
+
+void uconn_migrate_in(int fd, const uint8_t *data, size_t data_len) {
+    serverLog(LL_NOTICE, "** MIGRATE IN (fd=%d)", fd);
+
+    struct ContextEntry *entry = NULL;
+    for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
+        if (context_table[i].fd < 0) {
+            serverLog(LL_VERBOSE,"* allocate slot %d in connection table\n", i);
+            entry = &context_table[i];
+            break;
+        }
+    }
+    if (!entry) {
+        serverLog(LL_WARNING, "too many concurrent connections\n");
+        return;
+    }
+
+    entry->fd = fd;
+    struct TLSContext *context = tls_import_context(data, data_len);
+    tls_make_exportable(context, 1);
+    entry->context = context;
+}
+
+void *uconn_migrate_out(int fd) {
+    serverLog(LL_NOTICE, "** MIGRATE OUT (fd=%d)", fd);
+
+    // int code;
+
+    struct ContextEntry *entry = find_context_entry(fd);
+    entry->fd = -1;
+    struct TLSContext *context = entry->context;
+    entry->context = NULL;
+    return context; // TODO destroy context
+}
+
+size_t uconn_serialized_size(const void *data) {
+    struct TLSContext *context = (struct TLSContext *)data;
+    int len = tls_export_context(context, NULL, 0, 1);
+    serverLog(LL_VERBOSE, "* serialized size = %d\n", len);
+    return len;
+}
+
+size_t uconn_serialize(const void *data, uint8_t *buf, size_t buf_len) {
+    struct TLSContext *context = (struct TLSContext *)data;
+    size_t len = tls_export_context(context, buf, buf_len, 1);
+    return buf_len - len;
+}
+
+struct user_connection_peer_ffi {
+    void (*migrate_in)(int, const uint8_t *, size_t);
+    void *(*migrate_out)(int);
+    size_t (*serialized_size)(const void *);
+    size_t (*serialize)(const void *, uint8_t *, size_t);
+} capybara_user_connection = {
+    .migrate_in = uconn_migrate_in,
+    .migrate_out = uconn_migrate_out,
+    .serialized_size = uconn_serialized_size,
+    .serialize = uconn_serialize,
+};

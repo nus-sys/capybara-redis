@@ -33,6 +33,8 @@
 #define TLS_AMALGAMATION
 #include "tlse/tlse.c"
 
+#define READ_BUF_SIZE 4096
+
 /* The connections module provides a lean abstraction of network connections
  * to avoid direct socket and async event management across the Redis code base.
  *
@@ -113,7 +115,7 @@ struct ContextEntry {
 } context_table[MAX_CONNECTIONS];
 
 
-static int connSocketConfigure(void *privdata, int reconfigure) {
+static int socketConfigure(void *privdata, int reconfigure) {
     UNUSED(privdata);
     UNUSED(reconfigure);
     server_context = tls_create_context(1, TLS_V12);
@@ -148,6 +150,8 @@ static connection *connCreateSocket(void) {
  * but could but possible with other protocols).
  */
 static connection *connCreateAcceptedSocket(int fd, void *priv) {
+    serverLog(LL_VERBOSE, "TLS connCreateAcceptedSocket (fd=%d)", fd);
+
     UNUSED(priv);
     connection *conn = connCreateSocket();
     conn->fd = fd;
@@ -156,6 +160,7 @@ static connection *connCreateAcceptedSocket(int fd, void *priv) {
     struct ContextEntry *entry = NULL;
     for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
         if (context_table[i].fd == -1) {
+        serverLog(LL_VERBOSE,"Allocate context table slot %d", i);
             entry = &context_table[i];
             break;
         }
@@ -164,13 +169,16 @@ static connection *connCreateAcceptedSocket(int fd, void *priv) {
         serverLog(LL_WARNING,"Context table exhausted");
         return NULL;
     }
+    
     entry->fd = fd;
-    entry->context = tls_accept(server_context);
+    entry->context = NULL;
     return conn;
 }
 
 static int connSocketConnect(connection *conn, const char *addr, int port, const char *src_addr,
         ConnectionCallbackFunc connect_handler) {
+    serverLog(LL_WARNING,"Client side TLS is not implemented");
+
     int fd = anetTcpNonBlockBestEffortBindConnect(NULL,addr,port,src_addr);
     if (fd == -1) {
         conn->state = CONN_STATE_ERROR;
@@ -185,7 +193,6 @@ static int connSocketConnect(connection *conn, const char *addr, int port, const
     aeCreateFileEvent(server.el, conn->fd, AE_WRITABLE,
             conn->type->ae_handler, conn);
 
-    serverLog(LL_WARNING,"Client side TLS is not implemented");
     return C_OK;
 }
 
@@ -241,6 +248,8 @@ static void connSocketClose(connection *conn) {
 }
 
 static int connSocketWrite(connection *conn, const void *data, size_t data_len) {
+    serverLog(LL_VERBOSE, "TLS connSocketWrite, fd=%d, data_len=%zd", conn->fd, data_len);
+
     struct TLSContext *context = find_context_entry(conn->fd)->context;
     tls_write(context, data, data_len);
     unsigned int buf_len;
@@ -256,10 +265,17 @@ static int connSocketWrite(connection *conn, const void *data, size_t data_len) 
             conn->state = CONN_STATE_ERROR;
     }
 
-    return ret;
+    if (ret != (int)buf_len) {
+        serverLog(LL_WARNING,"TLS write incomplete");    
+    }
+    tls_buffer_clear(context);
+
+    return data_len;
 }
 
 static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcnt) {
+    serverLog(LL_VERBOSE, "TLS connSocketWritev, fd=%d", conn->fd);
+
     struct TLSContext *context = find_context_entry(conn->fd)->context;
     for (int i = 0; i < iovcnt; i += 1) {
         tls_write(context, iov[i].iov_base, iov[i].iov_len);
@@ -277,11 +293,15 @@ static int connSocketWritev(connection *conn, const struct iovec *iov, int iovcn
             conn->state = CONN_STATE_ERROR;
     }
 
+    if (ret != (int)buf_len) {
+        serverLog(LL_WARNING,"TLS write incomplete");    
+    }
+    tls_buffer_clear(context);
+
     return ret;
 }
 
 static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
-#define READ_BUF_SIZE 4096
     unsigned char read_buf[READ_BUF_SIZE];
     int ret = read(conn->fd, read_buf, READ_BUF_SIZE);
     if (!ret) {
@@ -298,20 +318,26 @@ static int connSocketRead(connection *conn, void *buf, size_t buf_len) {
 
     struct TLSContext *context = find_context_entry(conn->fd)->context;
     tls_consume_stream(context, read_buf, ret, NULL);
-    ret = tls_read(context, buf, buf_len);
+    int tls_ret = tls_read(context, buf, buf_len);
+    serverLog(LL_VERBOSE, "TLS connSocketRead, fd=%d, read(..)=%d tls_read(..)=%d", conn->fd, ret, tls_ret);
+    if (tls_ret != 0) {
+        return tls_ret;
+    }
     return ret;
 }
 
+static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask);
+
 static int connSocketAccept(connection *conn, ConnectionCallbackFunc accept_handler) {
+    serverLog(LL_VERBOSE, "TLS connSocketAccept fd=%d", conn->fd);
     int ret = C_OK;
 
     if (conn->state != CONN_STATE_ACCEPTING) return C_ERR;
-    conn->state = CONN_STATE_CONNECTED;
 
-    connIncrRefs(conn);
-    if (!callHandler(conn, accept_handler)) ret = C_ERR;
-    connDecrRefs(conn);
-
+    struct ContextEntry *entry = find_context_entry(conn->fd);
+    entry->context = tls_accept(server_context);
+    conn->conn_handler = accept_handler;
+    aeCreateFileEvent(server.el, conn->fd, AE_READABLE,connSocketEventHandler, conn);
     return ret;
 }
 
@@ -361,8 +387,65 @@ static const char *connSocketGetLastError(connection *conn) {
 static void connSocketEventHandler(struct aeEventLoop *el, int fd, void *clientData, int mask)
 {
     UNUSED(el);
-    UNUSED(fd);
     connection *conn = clientData;
+
+    serverLog(LL_VERBOSE, "TLS connSocketEventHandler(): fd=%d, state=%d, mask=%d, r=%d, w=%d, flags=%d",
+        fd, conn->state, mask, conn->read_handler != NULL, conn->write_handler != NULL, conn->flags);
+
+    if (conn->state == CONN_STATE_CONNECTING) {
+        serverLog(LL_WARNING, "TLS is not implemented for CONN_STATE_CONNECTING");
+    }
+
+    if (conn->state == CONN_STATE_ACCEPTING) {
+        struct TLSContext *context = find_context_entry(fd)->context;
+        if (mask & AE_READABLE) {
+            unsigned char read_buf[READ_BUF_SIZE];
+            while (1) {
+                int ret = read(fd, read_buf, READ_BUF_SIZE);
+                if (ret == 0) {
+                    serverLog(LL_WARNING, "TLS connection closed during handshake");
+                    conn->state = CONN_STATE_ERROR;
+                    return;
+                }
+                if (ret < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        break;
+                    }
+                    conn->last_errno = errno;
+                    conn->state = CONN_STATE_ERROR;
+                    return;
+                }
+                serverLog(LL_VERBOSE, "TLS read, length %d", ret);
+                tls_consume_stream(context, read_buf, ret, NULL);
+            }
+        }
+
+        unsigned int write_len;
+        const unsigned char *write_buf = tls_get_write_buffer(context, &write_len);
+        if (write_len > 0) {
+            int ret = write(fd, write_buf, write_len);
+            if (ret < 0 && !(errno == EAGAIN || errno == EWOULDBLOCK)) {
+                conn->last_errno = errno;
+                conn->state = CONN_STATE_ERROR;
+                return;
+            }
+            if (ret < (int)write_len) {
+                serverLog(LL_WARNING, "TLS incomplete write");
+            }
+            serverLog(LL_VERBOSE, "TLS write, length %d", ret);
+            tls_buffer_clear(context);
+        }
+
+        if (tls_established(context)) {
+            serverLog(LL_VERBOSE, "TLS established, cipher=%s", tls_cipher_name(context));
+            conn->state = CONN_STATE_CONNECTED;
+            if (!callHandler((connection *) conn, conn->conn_handler)) return;
+            conn->conn_handler = NULL;
+        } else {
+            aeCreateFileEvent(server.el, conn->fd, AE_READABLE,connSocketEventHandler, conn);
+            return;
+        }
+    }
 
     if (conn->state == CONN_STATE_CONNECTING &&
             (mask & AE_WRITABLE) && conn->conn_handler) {
@@ -504,7 +587,7 @@ static ConnectionType CT_Socket = {
     /* connection type initialize & finalize & configure */
     .init = NULL,
     .cleanup = NULL,
-    .configure = connSocketConfigure,
+    .configure = socketConfigure,
 
     /* ae & accept & listen & error & address handler */
     .ae_handler = connSocketEventHandler,

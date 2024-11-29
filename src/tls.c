@@ -32,6 +32,7 @@
 
 #define NO_TLS_LEGACY_SUPPORT
 #define TLS_AMALGAMATION
+#define TLS_REEXPORTABLE
 #include "tlse/tlse.c"
 
 #define READ_BUF_SIZE 4096
@@ -643,7 +644,7 @@ int RedisRegisterConnectionTypeTLS(void)
 
 
 void uconn_migrate_in(int fd, const uint8_t *data, size_t data_len) {
-    serverLog(LL_NOTICE, "** MIGRATE IN (fd=%d)", fd);
+    serverLog(LL_NOTICE, "** MIGRATE IN (fd=%d, data=%p[%zu])", fd, (void *)data, data_len);
 
     struct ContextEntry *entry = NULL;
     for (int i = 0; i < MAX_CONNECTIONS; i += 1) {
@@ -660,7 +661,8 @@ void uconn_migrate_in(int fd, const uint8_t *data, size_t data_len) {
 
     entry->fd = fd;
     struct TLSContext *context = tls_import_context(data, data_len);
-    tls_make_exportable(context, 1);
+    serverLog(LL_VERBOSE, "Context %p", (void *)context);
+    // tls_make_exportable(context, 1);
     entry->context = context;
 }
 
@@ -673,6 +675,7 @@ void *uconn_migrate_out(int fd) {
     entry->fd = -1;
     struct TLSContext *context = entry->context;
     entry->context = NULL;
+    serverLog(LL_VERBOSE, "Context %p", (void *)context);
     return context; // TODO destroy context
 }
 

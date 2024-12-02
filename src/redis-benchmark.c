@@ -60,6 +60,9 @@
 #include "hdr_histogram.h"
 #include "cli_common.h"
 #include "mt19937-64.h"
+#include <netinet/in.h>  // For sockaddr_in and htons
+#include <sys/socket.h>  // For socket functions like getsockname
+#include <arpa/inet.h>   // For ntohs
 
 #define UNUSED(V) ((void) V)
 #define RANDPTR_INITIAL_SIZE 8
@@ -697,6 +700,22 @@ static client createClient(char *cmd, size_t len, client from, int thread_id) {
             c->cluster_node = node;
         }
         c->context = redisConnectNonBlock(ip,port);
+        if (!c->context || c->context->err) {
+            fprintf(stderr,"Could not connect to Redis at ");
+            if (config.hostsocket == NULL || is_cluster_client)
+                fprintf(stderr,"%s:%d: %s\n",ip,port,c->context->errstr);
+            else
+                fprintf(stderr,"%s: %s\n",config.hostsocket,c->context->errstr);
+            exit(1);
+        }
+        // Retrieve and print the client's source port number
+        struct sockaddr_in addr;
+        socklen_t addr_len = sizeof(addr);
+        if (getsockname(c->context->fd, (struct sockaddr *)&addr, &addr_len) == 0) {
+            printf("Client connected on source port: %d\n", ntohs(addr.sin_port));
+        } else {
+            perror("getsockname failed");
+        }
     } else {
         c->context = redisConnectUnixNonBlock(config.hostsocket);
     }

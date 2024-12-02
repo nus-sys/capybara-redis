@@ -73,7 +73,7 @@
 #define CONFIG_LATENCY_HISTOGRAM_MIN_VALUE 10L          /* >= 10 usecs */
 #define CONFIG_LATENCY_HISTOGRAM_MAX_VALUE 3000000L          /* <= 3 secs(us precision) */
 #define CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE 3000000L   /* <= 3 secs(us precision) */
-#define SHOW_THROUGHPUT_INTERVAL 250  /* 250ms */
+#define SHOW_THROUGHPUT_INTERVAL 10  /* 250ms */
 
 #ifdef __DEMIKERNEL__
 #include <demi/libos.h>
@@ -1741,9 +1741,13 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     const float instantaneous_rps = (float)(requests_finished-previous_requests_finished)/instantaneous_dt;
     config.previous_tick = current_tick;
     atomicSet(config.previous_requests_finished,requests_finished);
-    printf("%*s\r", config.last_printed_bytes, " "); /* ensure there is a clean line */
-    int printed_bytes = printf("%s: rps=%.1f (overall: %.1f) avg_msec=%.3f (overall: %.3f)\r", config.title, instantaneous_rps, rps, hdr_mean(config.current_sec_latency_histogram)/1000.0f, hdr_mean(config.latency_histogram)/1000.0f);
-    config.last_printed_bytes = printed_bytes;
+    // printf("%*s\r", config.last_printed_bytes, " "); /* ensure there is a clean line */
+    // int printed_bytes = printf("%s: rps=%.1f (overall: %.1f) avg_msec=%.3f (overall: %.3f)\r", config.title, instantaneous_rps, rps, hdr_mean(config.current_sec_latency_histogram)/1000.0f, hdr_mean(config.latency_histogram)/1000.0f);
+    // config.last_printed_bytes = printed_bytes;
+    printf("%s,%.1f,%.3f\n", 
+            config.title, 
+            instantaneous_rps, 
+            hdr_value_at_percentile(config.current_sec_latency_histogram, 99.0)/1000.0f);
     hdr_reset(config.current_sec_latency_histogram);
     fflush(stdout);
     return SHOW_THROUGHPUT_INTERVAL;

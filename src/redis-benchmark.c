@@ -73,7 +73,7 @@
 #define CONFIG_LATENCY_HISTOGRAM_MIN_VALUE 10L          /* >= 10 usecs */
 #define CONFIG_LATENCY_HISTOGRAM_MAX_VALUE 3000000L          /* <= 3 secs(us precision) */
 #define CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE 3000000L   /* <= 3 secs(us precision) */
-#define SHOW_THROUGHPUT_INTERVAL 10  /* 250ms */
+#define SHOW_THROUGHPUT_INTERVAL 10  /* 10ms */
 
 #ifdef __DEMIKERNEL__
 #include <demi/libos.h>
@@ -497,6 +497,7 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
      * server already sent the reply and we need to parse it. Parsing overhead
      * is not part of the latency, so calculate it only once, here. */
     if (c->latency < 0) c->latency = ustime()-(c->start);
+    // printf("c->latency: %lld (ustime: %lld, c->start: %lld)\n", c->latency, ustime(), c->start);
 
 #if __DEMIKERNEL__
     c->context->privdata = &recent_qr;
@@ -618,11 +619,37 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             return;
         }
 
+        /* Retrieve the client port number. */
+        struct sockaddr_in addr;
+        socklen_t addr_len = sizeof(addr);
+        int client_port = 0;
+
+        if (getsockname(c->context->fd, (struct sockaddr *)&addr, &addr_len) == 0) {
+            client_port = ntohs(addr.sin_port);
+        } else {
+            perror("getsockname failed");
+        }
+        /* Add delay conditionally based on client port. */
+        if ((client_port / 2) % 4 != 0) {
+            // printf("client_port: %d\n", client_port);
+        
+            usleep(1000000); // Add delay if the condition is met
+        }
+        // static int seed_set = 0;
+        // if (!seed_set) {
+        //     srand(1733300023); 
+        //     seed_set = 1;
+        // }
+        // int random_delay = rand() % 3; // Random delay between 0 and 1000 microseconds
+        // usleep(random_delay*100); // Add random delay
+        // printf("random_delay: %d\n", random_delay);
+        
         /* Really initialize: randomize keys and set start time. */
         if (config.randomkeys) randomizeClientKey(c);
         if (config.cluster_mode && c->staglen > 0) setClusterKeyHashTag(c);
         atomicGet(config.slots_last_update, c->slots_last_update);
         c->start = ustime();
+        // printf("c->start: %lld\n", c->start);
         c->latency = -1;
     }
     const ssize_t buflen = sdslen(c->obuf);
@@ -633,6 +660,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
             /* Optimistically try to write before checking if the file descriptor
              * is actually writable. At worst we get EAGAIN. */
             const ssize_t nwritten = cliWriteConn(c->context,ptr,writeLen);
+            // printf("nwritten: %zu, send: %lld\n", nwritten, ustime());
             if (nwritten != writeLen) {
                 if (nwritten == -1 && errno != EAGAIN) {
                     if (errno != EPIPE)
@@ -961,7 +989,7 @@ static void showLatencyReport(void) {
         printf("\n");
         printf("Cumulative distribution of latencies:\n");
         previous_cumulative_count = -1;
-        hdr_iter_linear_init(&iter, config.latency_histogram, 100);
+        hdr_iter_linear_init(&iter, config.latency_histogram, 1);
         while (hdr_iter_next(&iter))
         {
             const double value = iter.highest_equivalent_value / 1000.0f;
@@ -1727,6 +1755,8 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     }
     if (config.csv) return SHOW_THROUGHPUT_INTERVAL;
     /* only first thread output throughput */
+    // inho: if this thread happens to be assigned to the flow with delay,
+    // this logging can be delayed too, no matter what SHOW_THROUGHPUT_INTERVAL is set.
     if (thread != NULL && thread->index != 0) {
         return SHOW_THROUGHPUT_INTERVAL;
     }

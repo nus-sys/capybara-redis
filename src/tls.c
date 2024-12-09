@@ -33,6 +33,7 @@
 #define NO_TLS_LEGACY_SUPPORT
 #define TLS_AMALGAMATION
 #define TLS_REEXPORTABLE
+#define LTC_NO_TABLES 1
 #include "tlse/tlse.c"
 
 #define READ_BUF_SIZE 4096

@@ -73,7 +73,7 @@
 #define CONFIG_LATENCY_HISTOGRAM_MIN_VALUE 10L          /* >= 10 usecs */
 #define CONFIG_LATENCY_HISTOGRAM_MAX_VALUE 3000000L          /* <= 3 secs(us precision) */
 #define CONFIG_LATENCY_HISTOGRAM_INSTANT_MAX_VALUE 3000000L   /* <= 3 secs(us precision) */
-#define SHOW_THROUGHPUT_INTERVAL 10  /* 10ms */
+#define SHOW_THROUGHPUT_INTERVAL 20  /* 10ms */
 
 #ifdef __DEMIKERNEL__
 #include <demi/libos.h>
@@ -133,6 +133,10 @@ static struct config {
     pthread_mutex_t liveclients_mutex;
     pthread_mutex_t is_updating_slots_mutex;
     int resp3; /* use RESP3 */
+
+    const char *backup_hostip;
+    int backup_hostport;
+
 } config;
 
 typedef struct _client {
@@ -486,7 +490,80 @@ static void clientDone(client c) {
     }
 }
 
+static int reconnectToBackupServer(client c) {
+    // config.requests--; // one request can be dropped when the server crashes
+    if (!config.backup_hostip || config.backup_hostport == 0) {
+        fprintf(stderr, "Backup server not configured.\n");
+        return -1;
+    }
+
+    redisFree(c->context); // Free the old connection
+
+    if (config.tls) {
+        // Initialize a TLS connection
+        redisContext *new_context = redisConnect(config.backup_hostip, config.backup_hostport);
+        if (!new_context || new_context->err) {
+            fprintf(stderr, "Could not connect to backup Redis server at %s:%d: %s\n",
+                    config.backup_hostip, config.backup_hostport, new_context ? new_context->errstr : "Unknown error");
+            if (new_context) redisFree(new_context);
+            return -1;
+        }
+
+        // Perform the TLS handshake
+        const char *err = NULL;
+        if (cliSecureConnection(new_context, config.sslconfig, &err) == REDIS_ERR) {
+            fprintf(stderr, "Could not negotiate a TLS connection with backup server: %s\n", err ? err : "Unknown error");
+            redisFree(new_context);
+            return -1;
+        }
+
+        c->context = new_context;
+    } else {
+        // Establish a regular TCP connection
+        c->context = redisConnect(config.backup_hostip, config.backup_hostport);
+        if (!c->context || c->context->err) {
+            fprintf(stderr, "Could not connect to backup Redis server at %s:%d: %s\n",
+                    config.backup_hostip, config.backup_hostport, c->context->errstr);
+            return -1;
+        }
+    }
+
+    // Reapply any connection-specific settings (auth, database selection, etc.)
+    if (config.conn_info.auth) {
+        redisReply *reply;
+        if (config.conn_info.user == NULL)
+            reply = redisCommand(c->context, "AUTH %s", config.conn_info.auth);
+        else
+            reply = redisCommand(c->context, "AUTH %s %s",
+                                 config.conn_info.user, config.conn_info.auth);
+        if (!reply || reply->type == REDIS_REPLY_ERROR) {
+            fprintf(stderr, "Authentication failed for backup server: %s\n",
+                    reply ? reply->str : "Unknown error");
+            if (reply) freeReplyObject(reply);
+            return -1;
+        }
+        freeReplyObject(reply);
+    }
+
+    if (config.conn_info.input_dbnum != 0) {
+        redisReply *reply = redisCommand(c->context, "SELECT %d", config.conn_info.input_dbnum);
+        if (!reply || reply->type == REDIS_REPLY_ERROR) {
+            fprintf(stderr, "Failed to select database on backup server: %s\n",
+                    reply ? reply->str : "Unknown error");
+            if (reply) freeReplyObject(reply);
+            return -1;
+        }
+        freeReplyObject(reply);
+    }
+
+    return 0;
+}
+
+
+
 static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    // printf("readHandler\n");
+    
     client c = privdata;
     void *reply = NULL;
     UNUSED(el);
@@ -502,10 +579,21 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 #if __DEMIKERNEL__
     c->context->privdata = &recent_qr;
 #endif
-
+    // printf("redisBufferRead\n");
     if (redisBufferRead(c->context) != REDIS_OK) {
-        fprintf(stderr,"Error: %s\n",c->context->errstr);
-        exit(1);
+        // fprintf(stderr, "Error reading from Redis server: %s\n", c->context->errstr);
+        // printf("config.request_finished: %d\n", config.requests_finished);
+        if (reconnectToBackupServer(c) == 0) {
+            
+            // fprintf(stderr, "Reconnected to backup server at %s:%d\n",
+            //         config.backup_hostip, config.backup_hostport);
+            // printf("*config.request_finished: %d\n", config.requests_finished);
+            resetClient(c); // Reset the client to resume requests
+        } else {
+            fprintf(stderr, "Failed to reconnect to backup server.\n");
+            exit(1);
+        }
+        return;
     } else {
         while(c->pending) {
             if (redisGetReply(c->context,&reply) != REDIS_OK) {
@@ -605,6 +693,7 @@ static void readHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
 }
 
 static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
+    // printf("writeHandler\n");
     client c = privdata;
     UNUSED(el);
     UNUSED(fd);
@@ -624,6 +713,7 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         socklen_t addr_len = sizeof(addr);
         int client_port = 0;
 
+        /* Active this for Redis load balancing eval*/
         if (getsockname(c->context->fd, (struct sockaddr *)&addr, &addr_len) == 0) {
             client_port = ntohs(addr.sin_port);
         } else {
@@ -635,6 +725,8 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         
             usleep(1000000); // Add delay if the condition is met
         }
+        /* Active this for Redis load balancing eval*/
+        
         // static int seed_set = 0;
         // if (!seed_set) {
         //     srand(1733300023); 
@@ -645,6 +737,8 @@ static void writeHandler(aeEventLoop *el, int fd, void *privdata, int mask) {
         // printf("random_delay: %d\n", random_delay);
         
         /* Really initialize: randomize keys and set start time. */
+        // printf("sleep 1 sec...\n");
+        // usleep(1000000);
         if (config.randomkeys) randomizeClientKey(c);
         if (config.cluster_mode && c->staglen > 0) setClusterKeyHashTag(c);
         atomicGet(config.slots_last_update, c->slots_last_update);
@@ -1627,7 +1721,14 @@ int parseOptions(int argc, char **argv) {
             config.sslconfig.ciphersuites = strdup(argv[++i]);
         #endif
         #endif
-        } else {
+        }else if (!strcmp(argv[i], "--backup-host")) {
+            if (lastarg) goto invalid;
+            config.backup_hostip = strdup(argv[++i]);
+        } else if (!strcmp(argv[i], "--backup-port")) {
+            if (lastarg) goto invalid;
+            config.backup_hostport = atoi(argv[++i]);
+        } 
+        else {
             /* Assume the user meant to provide an option when the arg starts
              * with a dash. We're done otherwise and should use the remainder
              * as the command and arguments for running the benchmark. */
@@ -1749,7 +1850,12 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
         fprintf(stderr,"All clients disconnected... aborting.\n");
         exit(1);
     }
+    // printf("requests_finished: %d, config.requests: %d\n", requests_finished, config.requests);
     if (config.num_threads && requests_finished >= config.requests) {
+        aeStop(eventLoop);
+        return AE_NOMORE;
+    }
+    if (config.num_threads && config.requests > 100000 && requests_finished >= config.requests-500) {
         aeStop(eventLoop);
         return AE_NOMORE;
     }
@@ -1769,12 +1875,14 @@ int showThroughput(struct aeEventLoop *eventLoop, long long id, void *clientData
     const float rps = (float)requests_finished/dt;
     const float instantaneous_dt = (float)(current_tick-config.previous_tick)/1000.0;
     const float instantaneous_rps = (float)(requests_finished-previous_requests_finished)/instantaneous_dt;
+    // printf("requests_finished: %d, config.previous_requests_finished: %d\n", requests_finished, previous_requests_finished);
+    
     config.previous_tick = current_tick;
     atomicSet(config.previous_requests_finished,requests_finished);
     // printf("%*s\r", config.last_printed_bytes, " "); /* ensure there is a clean line */
     // int printed_bytes = printf("%s: rps=%.1f (overall: %.1f) avg_msec=%.3f (overall: %.3f)\r", config.title, instantaneous_rps, rps, hdr_mean(config.current_sec_latency_histogram)/1000.0f, hdr_mean(config.latency_histogram)/1000.0f);
     // config.last_printed_bytes = printed_bytes;
-    printf("%s,%.1f,%.3f\n", 
+    printf("***%s,%.1f,%.3f\n", 
             config.title, 
             instantaneous_rps, 
             hdr_value_at_percentile(config.current_sec_latency_histogram, 99.0)/1000.0f);
